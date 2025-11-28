@@ -295,7 +295,7 @@ with table_col:
             ]
         ]
         .style.format({"ai_risk_score": "{:.0f}"})
-        .hide_index(),
+        .hide(axis="index"),
         use_container_width=True,
         height=520,
     )
