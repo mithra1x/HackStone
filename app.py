@@ -121,6 +121,11 @@ mitre_filter = st.sidebar.multiselect(
     default=mitre_options,
 )
 
+search_text = st.sidebar.text_input(
+    "Search (file, user, process, MITRE, reason)",
+    placeholder="e.g., passwd, sshd, T1059",
+)
+
 event_type_filter = st.sidebar.multiselect(
     "Event type",
     options=event_types,
@@ -157,6 +162,16 @@ df = df[
     & (df["process"].isin(process_filter))
     & (df["host"].isin(host_filter))
 ]
+
+if search_text:
+    q = search_text.lower()
+    search_cols = ["file_path", "user", "process", "mitre_technique", "reason"]
+    df = df[
+        df[search_cols]
+        .astype(str)
+        .apply(lambda s: s.str.lower().str.contains(q, na=False))
+        .any(axis=1)
+    ]
 
 if df.empty:
     st.info("No events match the current filters.")
