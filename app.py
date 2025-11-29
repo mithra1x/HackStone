@@ -18,7 +18,66 @@ st.set_page_config(
     page_icon="🔐",
 )
 
+
+def get_theme_tokens(dark: bool) -> Dict[str, str]:
+    """Provide color tokens for light/dark themes."""
+
+    if dark:
+        return {
+            "base": "#0b1221",
+            "card": "#111827",
+            "text": "#e5e7eb",
+        }
+
+    return {
+        "base": "#ffffff",
+        "card": "#f5f7fb",
+        "text": "#0f172a",
+    }
+
+
+def apply_theme(dark: bool) -> None:
+    """Inject a light/dark theme toggle for the dashboard."""
+
+    tokens = get_theme_tokens(dark)
+    base_bg = tokens["base"]
+    card_bg = tokens["card"]
+    text_color = tokens["text"]
+
+    st.markdown(
+        f"""
+        <style>
+            body, .stApp {{
+                background-color: {base_bg};
+                color: {text_color};
+            }}
+            .stMarkdown, .stText, .stTable {{
+                color: {text_color};
+            }}
+            .stMetric {{
+                background: {card_bg};
+                padding: 12px 16px;
+                border-radius: 12px;
+                border: 1px solid #1f2937;
+            }}
+            .stDataFrame {{
+                background: {card_bg};
+                color: {text_color};
+                border-radius: 10px;
+            }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 st.title("🔐 File Integrity Monitoring Command Center")
+
+dark_mode = st.sidebar.toggle("Dark mode", value=True, help="Switch between dark and light themes")
+apply_theme(dark_mode)
+
+THEME_TOKENS = get_theme_tokens(dark_mode)
+PLOTLY_TEMPLATE = "plotly_dark" if dark_mode else "plotly_white"
 
 
 # =============================================================
@@ -226,6 +285,11 @@ with chart_col1:
     st.subheader("Event volume by type")
     by_type = df.groupby("event_type").size().reset_index(name="count")
     fig_type = px.bar(by_type, x="event_type", y="count", color="event_type", height=300)
+    fig_type.update_layout(
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor=THEME_TOKENS["base"],
+        plot_bgcolor=THEME_TOKENS["card"],
+    )
     st.plotly_chart(fig_type, use_container_width=True)
 
 with chart_col2:
@@ -237,6 +301,11 @@ with chart_col2:
         color=df["ai_risk_score"].apply(classify_risk),
         height=300,
         labels={"color": "severity"},
+    )
+    fig_risk.update_layout(
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor=THEME_TOKENS["base"],
+        plot_bgcolor=THEME_TOKENS["card"],
     )
     st.plotly_chart(fig_risk, use_container_width=True)
 
@@ -250,6 +319,11 @@ with chart_col3:
         .reset_index(name="count")
     )
     fig_time = px.line(timeline, x="minute", y="count", markers=True, height=300)
+    fig_time.update_layout(
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor=THEME_TOKENS["base"],
+        plot_bgcolor=THEME_TOKENS["card"],
+    )
     st.plotly_chart(fig_time, use_container_width=True)
 
 # =============================================================
