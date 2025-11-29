@@ -52,14 +52,25 @@ def load_events_from_api() -> pd.DataFrame:
         if "process_name" in df.columns:
             df = df.rename(columns={"process_name": "process"})
 
-        # Normalize hash fields from various payload shapes
-        rename_map = {
-            "hash_before": "old_hash",
-            "hash_after": "new_hash",
-            "previous_sha256": "old_hash",
-            "sha256": "new_hash",
-        }
-        df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+        # Normalize hash fields from various payload shapes while keeping column names unique
+        def consolidate_hash(df: pd.DataFrame, candidates: list[str], output: str) -> pd.DataFrame:
+            combined = None
+            for col in candidates:
+                if col in df.columns:
+                    combined = df[col] if combined is None else combined.combine_first(df[col])
+            if combined is not None:
+                df[output] = combined
+
+            # Drop the duplicate source columns to avoid duplicate names downstream
+            drop_cols = [c for c in candidates if c != output]
+            df = df.drop(columns=[c for c in drop_cols if c in df.columns], errors="ignore")
+            return df
+
+        df = consolidate_hash(df, ["old_hash", "hash_before", "previous_sha256"], "old_hash")
+        df = consolidate_hash(df, ["new_hash", "hash_after", "sha256"], "new_hash")
+
+        # Ensure no duplicate column names remain
+        df = df.loc[:, ~df.columns.duplicated()]
 
         return df
     except Exception as e:  # noqa: BLE001
