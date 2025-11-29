@@ -21,6 +21,80 @@ st.set_page_config(
 st.title("🔐 File Integrity Monitoring Command Center")
 
 
+def inject_design_tokens() -> None:
+    """Inject CSS tokens and structural helpers based on the UI brief."""
+
+    st.markdown(
+        """
+        <style>
+        :root {
+          --bg: #F7F8FB;
+          --card: #fff;
+          --border: #E6E9F0;
+          --text: #0F172A;
+          --muted: #94A3B8;
+          --accent: #4B70F5;
+        }
+
+        /* Base layout tweaks for Streamlit */
+        [data-testid="stAppViewContainer"] > .main {
+            background: var(--bg);
+            color: var(--text);
+        }
+        [data-testid="stHeader"] {background: transparent;}
+        .block-container {padding-top: 12px; max-width: 1400px;}
+
+        /* Top bar approximation */
+        .topbar {
+            width: 100%;
+            padding: 12px 20px;
+            border-radius: 12px;
+            background: linear-gradient(120deg, #e8ecff, #f5f7ff);
+            border: 1px solid var(--border);
+            color: var(--text);
+            font-weight: 700;
+            font-size: 18px;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.06);
+            margin-bottom: 16px;
+        }
+
+        /* Generic card styling to mirror the brief */
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.06);
+            padding: 16px;
+        }
+
+        /* Badges */
+        .badge {padding: 4px 10px; border-radius: 999px; font-weight: 600; font-size: 12px; display: inline-block;}
+        .badge.open {background:#E3F2FD; color:#0B5ED7;}
+        .badge.closed {background:#E0F7FA; color:#0284C7;}
+        .badge.new {background:#E8F5E9; color:#2E7D32;}
+        .badge.follow-up {background:#FFF7E6; color:#E38800;}
+        .badge.attended {background:#F3E8FF; color:#7E22CE;}
+
+        /* Timeline treatment */
+        .timeline {max-height: 520px; overflow-y: auto; padding-left: 8px;}
+        .timeline-item {position: relative; padding-left: 20px; margin-bottom: 12px;}
+        .timeline-item::before {content:''; position:absolute; left:6px; top:6px; width:10px; height:10px; border-radius:50%; background: var(--accent);}
+        .timeline-item::after {content:''; position:absolute; left:10px; top:16px; bottom:-8px; width:2px; background: var(--border);}
+
+        /* Log preview table */
+        .mono-table {font-family: 'JetBrains Mono', 'SFMono-Regular', monospace; font-size: 13px; border-collapse: collapse; width: 100%;}
+        .mono-table th {background:#F8FAFC; padding: 10px; text-align:left; color: var(--muted);}
+        .mono-table td {padding:10px; border-bottom:1px solid var(--border);}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+inject_design_tokens()
+st.markdown("<div class='topbar'>Real-Time RML Dashboard</div>", unsafe_allow_html=True)
+
+
 # =============================================================
 # Auto-refresh (every 3 seconds)
 # =============================================================
@@ -40,7 +114,11 @@ def load_events_from_api() -> pd.DataFrame:
         df = pd.DataFrame(events)
 
         if "timestamp" in df.columns:
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            df = df.dropna(subset=["timestamp"])
+        else:
+            st.error("API response is missing required 'timestamp' field.")
+            return pd.DataFrame()
         if "process_name" in df.columns:
             df = df.rename(columns={"process_name": "process"})
         if "hash_before" in df.columns:
@@ -343,3 +421,96 @@ with timeline_col:
         )
 
 st.caption("Data is pulled from the live /events API endpoint (limit=100).")
+
+with st.expander("UI dizayn təlimatı (referens)"):
+    st.markdown(
+        """
+        1. **Layout planı** – 1200–1440px konteyner, 24px padding, bölmələr arası 24–32px boşluq; əsas grid 2 sütun (sol 2/3, sağ 1/3), yuxarı metrik kartları üçün 4 sütunlu responsiv grid.
+        2. **Rəng/typography** – Fon #F7F8FB, kart #FFFFFF, accent #4B70F5, neytral #94A3B8/#E6E9F0, Inter 14–15px body, 20–24px başlıq; status badge rəngləri Open/Closed/New/Follow-up/Attended üçün əlavə olunub.
+        3. **UI blokları** – statistik kart (ikonlu), real-time alerts cədvəli (hover, #F8FAFC header), timeline (vertikal xətt + nöqtələr), monospace log cədvəli (JetBrains Mono). Row hündürlüyü 44–48px.
+        4. **HTML skeleton** – topbar, metrics grid, əsas grid (cədvəl + timeline), preview/log cədvəli.
+        5. **Əsas CSS** – aşağıdakı kodda dəyişənlər, kart border/kölgə, badge rəngləri, timeline və monospace cədvəl üçün stillər daxil edilib.
+        6. **Komponent məsləhətləri** – `<StatCard />`, `<StatusBadge />`, `<DataTable />`, `<Timeline />`; props-lar status/rəng sxemi və kolon konfigurasiya üzərindən idarə olunur; theming üçün CSS dəyişənləri və ya Tailwind config.
+        7. **Kitabxana alternativləri** – Tailwind + Headless UI, Ant Design / MUI, Shadcn/UI.
+        8. **Performans/UX** – virtualized table (10k+), skeleton states, boş vəziyyət mesajları, əlçatanlıq üçün fokus halqaları (outline: 2px solid accent), kontrast ≥ 4.5:1.
+        """
+    )
+
+    st.markdown("**Grid HTML skeleton**")
+    st.code(
+        """
+<body>
+  <header class="topbar">Real-Time RML Dashboard</header>
+  <main class="page">
+    <section class="metrics-grid">
+      <!-- 4 statistic cards -->
+    </section>
+
+    <section class="main-grid">
+      <div class="card table-card">…alerts table…</div>
+      <aside class="card timeline-card">
+        <div class="summary-row">…counts…</div>
+        <div class="timeline">…items…</div>
+      </aside>
+    </section>
+
+    <section class="card preview-card">
+      <header class="card-title">Previews</header>
+      <div class="table mono">…log table…</div>
+    </section>
+  </main>
+</body>
+        """,
+        language="html",
+    )
+
+    st.markdown("**Əsas CSS**")
+    st.code(
+        """
+:root {
+  --bg: #F7F8FB;
+  --card: #fff;
+  --border: #E6E9F0;
+  --text: #0F172A;
+  --muted: #94A3B8;
+  --accent: #4B70F5;
+}
+
+body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); margin:0; }
+
+.page { padding: 24px; max-width: 1400px; margin: 0 auto; }
+
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+        box-shadow: 0 4px 14px rgba(0,0,0,0.06); padding: 16px; }
+
+.metrics-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap: 16px; margin-bottom: 24px; }
+
+.main-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; align-items: start; }
+
+.table-card .table { width: 100%; border-collapse: collapse; }
+.table-card th { text-align: left; font-size: 13px; color: var(--muted); padding: 10px 12px; background: #F8FAFC; }
+.table-card td { padding: 12px; border-bottom: 1px solid var(--border); }
+.table-card tr:hover { background: #F4F6FB; }
+
+.badge { padding: 4px 10px; border-radius: 999px; font-weight: 600; font-size: 12px; }
+.badge.open { background:#E3F2FD; color:#0B5ED7; }
+.badge.closed { background:#E0F7FA; color:#0284C7; }
+
+.timeline { max-height: 520px; overflow-y: auto; padding-left: 8px; }
+.timeline-item { position: relative; padding-left: 20px; margin-bottom: 12px; }
+.timeline-item::before { content:''; position:absolute; left:6px; top:6px; width:10px; height:10px;
+                         border-radius:50%; background: var(--accent); }
+.timeline-item::after { content:''; position:absolute; left:10px; top:16px; bottom:-8px; width:2px; background: var(--border); }
+
+.preview-card .table { font-family: 'JetBrains Mono', 'SFMono-Regular', monospace; font-size: 13px; }
+.preview-card th { background:#F8FAFC; padding: 10px; text-align:left; color: var(--muted); }
+.preview-card td { padding:10px; border-bottom:1px solid var(--border); }
+        """,
+        language="css",
+    )
+
+    st.markdown(
+        """
+        React/Vue komponent məsləhətləri: reusable `<StatCard />`, `<StatusBadge status="Open" />`, `<DataTable columns data />`, `<Timeline items />` komponentləri; props ilə rəng sxemi və kolon align idarə olunur. Data üçün WebSocket/SSE, cədvəl update-lərində optimistic splice/concat. Performans üçün virtualized table (React Window/Virtuoso), skeleton states, boş state mesajları.
+        """
+    )
