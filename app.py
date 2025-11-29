@@ -32,7 +32,15 @@ def load_events_from_api() -> pd.DataFrame:
         resp = requests.get(API_URL, timeout=2)
         resp.raise_for_status()
         data = resp.json()
-        events = data.get("events", [])
+
+        # API can return either a raw list or a dict with an "events" key
+        if isinstance(data, list):
+            events = data
+        elif isinstance(data, dict) and "events" in data:
+            events = data.get("events", [])
+        else:
+            # Fallback: try to treat the dict itself as a single event
+            events = [data] if isinstance(data, dict) else []
 
         if not events:
             return pd.DataFrame()
@@ -43,10 +51,26 @@ def load_events_from_api() -> pd.DataFrame:
             df["timestamp"] = pd.to_datetime(df["timestamp"])
         if "process_name" in df.columns:
             df = df.rename(columns={"process_name": "process"})
-        if "hash_before" in df.columns:
-            df = df.rename(columns={"hash_before": "old_hash"})
-        if "hash_after" in df.columns:
-            df = df.rename(columns={"hash_after": "new_hash"})
+
+        # Normalize hash fields from various payload shapes while keeping column names unique
+        def consolidate_hash(df: pd.DataFrame, candidates: list[str], output: str) -> pd.DataFrame:
+            combined = None
+            for col in candidates:
+                if col in df.columns:
+                    combined = df[col] if combined is None else combined.combine_first(df[col])
+            if combined is not None:
+                df[output] = combined
+
+            # Drop the duplicate source columns to avoid duplicate names downstream
+            drop_cols = [c for c in candidates if c != output]
+            df = df.drop(columns=[c for c in drop_cols if c in df.columns], errors="ignore")
+            return df
+
+        df = consolidate_hash(df, ["old_hash", "hash_before", "previous_sha256"], "old_hash")
+        df = consolidate_hash(df, ["new_hash", "hash_after", "sha256"], "new_hash")
+
+        # Ensure no duplicate column names remain
+        df = df.loc[:, ~df.columns.duplicated()]
 
         return df
     except Exception as e:  # noqa: BLE001
@@ -187,10 +211,6 @@ def severity_badge(score: int) -> str:
     return f"<span style='color:{color}; font-weight:600;'>{level.upper()}</span>"
 
 
-def mitre_badge(technique: str) -> str:
-    return f"<span style='background:#111827;color:white;padding:2px 6px;border-radius:6px;font-size:12px;'>MITRE {technique}</span>"
-
-
 def format_timestamp(ts: datetime) -> str:
     return ts.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -263,7 +283,6 @@ with table_col:
     df_display = df.copy()
     df_display["timestamp"] = df_display["timestamp"].apply(format_timestamp)
     df_display["severity"] = df_display["ai_risk_score"].apply(classify_risk).str.upper()
-    df_display["mitre"] = df_display["mitre_technique"]
 
     st.dataframe(
         df_display[
@@ -274,11 +293,8 @@ with table_col:
                 "file_path",
                 "ai_risk_score",
                 "severity",
-                "mitre",
                 "user",
                 "process",
-                "host",
-                "site",
             ]
         ]
         .style.format({"ai_risk_score": "{:.0f}"})
@@ -301,7 +317,6 @@ with detail_col:
     )
     st.markdown(f"**Host / Site:** `{event['host']}` / `{event['site']}`")
     st.markdown(f"**Actor:** `{event['user']}` via `{event['process']}`")
-    st.markdown(f"**MITRE:** {mitre_badge(event['mitre_technique'])}", unsafe_allow_html=True)
 
     st.progress(int(event["ai_risk_score"]), text="Risk score")
 
@@ -337,9 +352,50 @@ with timeline_col:
         }.get(etype, "⬜")
         st.markdown(
             f"**{ts}** — {emoji} `{etype}` on `{fpath}` | "
-            f"Risk: <span style='color:{SEVERITY_COLORS[level]};'>{score}</span>"
-            f" | {mitre_badge(row['mitre_technique'])}",
+            f"Risk: <span style='color:{SEVERITY_COLORS[level]};'>{score}</span>",
             unsafe_allow_html=True,
         )
 
 st.caption("Data is pulled from the live /events API endpoint (limit=100).")
+
+# =============================================================
+# Hash overview tables
+# =============================================================
+
+st.subheader("🔑 SHA256 overview")
+
+hash_prev_col, hash_new_col = st.columns(2)
+
+hash_df = (
+    df[
+        [
+            "timestamp",
+            "event_id",
+            "file_path",
+            "old_hash",
+            "new_hash",
+        ]
+    ]
+    .sort_values("timestamp", ascending=False)
+    .assign(timestamp=lambda d: d["timestamp"].apply(format_timestamp))
+)
+
+with hash_prev_col:
+    st.markdown("**Previous SHA256**")
+    st.dataframe(
+        hash_df[["timestamp", "event_id", "file_path", "old_hash"]]
+        .rename(columns={"old_hash": "previous_sha256"})
+        .style.hide(axis="index"),
+        use_container_width=True,
+        height=350,
+    )
+
+with hash_new_col:
+    st.markdown("**Current SHA256**")
+    st.dataframe(
+        hash_df[["timestamp", "event_id", "file_path", "new_hash"]]
+        .rename(columns={"new_hash": "sha256"})
+        .style.hide(axis="index"),
+        use_container_width=True,
+        height=350,
+    )
