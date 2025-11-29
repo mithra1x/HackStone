@@ -187,10 +187,6 @@ def severity_badge(score: int) -> str:
     return f"<span style='color:{color}; font-weight:600;'>{level.upper()}</span>"
 
 
-def mitre_badge(technique: str) -> str:
-    return f"<span style='background:#111827;color:white;padding:2px 6px;border-radius:6px;font-size:12px;'>MITRE {technique}</span>"
-
-
 def format_timestamp(ts: datetime) -> str:
     return ts.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -263,7 +259,6 @@ with table_col:
     df_display = df.copy()
     df_display["timestamp"] = df_display["timestamp"].apply(format_timestamp)
     df_display["severity"] = df_display["ai_risk_score"].apply(classify_risk).str.upper()
-    df_display["mitre"] = df_display["mitre_technique"]
 
     st.dataframe(
         df_display[
@@ -274,11 +269,8 @@ with table_col:
                 "file_path",
                 "ai_risk_score",
                 "severity",
-                "mitre",
                 "user",
                 "process",
-                "host",
-                "site",
             ]
         ]
         .style.format({"ai_risk_score": "{:.0f}"})
@@ -301,7 +293,6 @@ with detail_col:
     )
     st.markdown(f"**Host / Site:** `{event['host']}` / `{event['site']}`")
     st.markdown(f"**Actor:** `{event['user']}` via `{event['process']}`")
-    st.markdown(f"**MITRE:** {mitre_badge(event['mitre_technique'])}", unsafe_allow_html=True)
 
     st.progress(int(event["ai_risk_score"]), text="Risk score")
 
@@ -338,7 +329,6 @@ with timeline_col:
         st.markdown(
             f"**{ts}** — {emoji} `{etype}` on `{fpath}` | "
             f"Risk: <span style='color:{SEVERITY_COLORS[level]};'>{score}</span>"
-            f" | {mitre_badge(row['mitre_technique'])}",
             unsafe_allow_html=True,
         )
 
