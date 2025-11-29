@@ -328,7 +328,7 @@ with timeline_col:
         }.get(etype, "⬜")
         st.markdown(
             f"**{ts}** — {emoji} `{etype}` on `{fpath}` | "
-            f"Risk: <span style='color:{SEVERITY_COLORS[level]};'>{score}</span>"
+            f"Risk: <span style='color:{SEVERITY_COLORS[level]};'>{score}</span>",
             unsafe_allow_html=True,
         )
 
