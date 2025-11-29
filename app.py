@@ -32,7 +32,15 @@ def load_events_from_api() -> pd.DataFrame:
         resp = requests.get(API_URL, timeout=2)
         resp.raise_for_status()
         data = resp.json()
-        events = data.get("events", [])
+
+        # API can return either a raw list or a dict with an "events" key
+        if isinstance(data, list):
+            events = data
+        elif isinstance(data, dict) and "events" in data:
+            events = data.get("events", [])
+        else:
+            # Fallback: try to treat the dict itself as a single event
+            events = [data] if isinstance(data, dict) else []
 
         if not events:
             return pd.DataFrame()
@@ -43,10 +51,15 @@ def load_events_from_api() -> pd.DataFrame:
             df["timestamp"] = pd.to_datetime(df["timestamp"])
         if "process_name" in df.columns:
             df = df.rename(columns={"process_name": "process"})
-        if "hash_before" in df.columns:
-            df = df.rename(columns={"hash_before": "old_hash"})
-        if "hash_after" in df.columns:
-            df = df.rename(columns={"hash_after": "new_hash"})
+
+        # Normalize hash fields from various payload shapes
+        rename_map = {
+            "hash_before": "old_hash",
+            "hash_after": "new_hash",
+            "previous_sha256": "old_hash",
+            "sha256": "new_hash",
+        }
+        df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
 
         return df
     except Exception as e:  # noqa: BLE001
