@@ -1,11 +1,13 @@
-import random
 from datetime import datetime, timedelta
-from typing import Dict, List
+from typing import Dict
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
+import requests
+
+API_URL = "http://127.0.0.1:8000/events?limit=100"
 
 # =============================================================
 # Page config
@@ -17,135 +19,120 @@ st.set_page_config(
 )
 
 st.title("🔐 File Integrity Monitoring Command Center")
-st.caption(
-    "BLUE 3 – Enterprise demo with risk scores, MITRE mapping, live feed, and analyst playbooks"
-)
+
 
 # =============================================================
 # Auto-refresh (every 3 seconds)
 # =============================================================
 st_autorefresh(interval=3000, key="fim_refresh")
 
-# =============================================================
-# Session state (store events here)
-# =============================================================
-if "events" not in st.session_state:
-    st.session_state.events: List[Dict] = []
 
-# =============================================================
-# Random event generator (until an API arrives)
-# =============================================================
-EVENT_TYPES = ["create", "modify", "delete"]
-FILES = [
-    "/etc/passwd",
-    "/etc/shadow",
-    "/etc/ssh/sshd_config",
-    "/var/www/html/index.php",
-    "/opt/app/config.yaml",
-    "/usr/local/bin/backup.sh",
-    "/home/deploy/.ssh/authorized_keys",
-]
-MITRE = ["T1070", "T1059", "T1098", "T1565", "T1110", "T1021"]
-USERS = ["root", "www-data", "deploy", "backup", "unknown", "jenkins"]
-PROCESSES = [
-    "ssh",
-    "apache2",
-    "python3",
-    "bash",
-    "cron",
-    "systemd",
-    "rsync",
-]
-HOSTS = ["edge-gw-01", "db-02", "web-01", "web-02", "siem-forwarder"]
-SITES = ["fra-1", "lon-3", "iad-5"]
+def load_events_from_api() -> pd.DataFrame:
+    try:
+        resp = requests.get(API_URL, timeout=2)
+        resp.raise_for_status()
+        data = resp.json()
+        events = data.get("events", [])
+
+        if not events:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(events)
+
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+        if "process_name" in df.columns:
+            df = df.rename(columns={"process_name": "process"})
+        if "hash_before" in df.columns:
+            df = df.rename(columns={"hash_before": "old_hash"})
+        if "hash_after" in df.columns:
+            df = df.rename(columns={"hash_after": "new_hash"})
+
+        return df
+    except Exception as e:  # noqa: BLE001
+        st.error(f"API error: {e}")
+        return pd.DataFrame()
 
 
-def add_random_event() -> None:
-    now = datetime.now()
-    event_type = random.choices(EVENT_TYPES, weights=[0.35, 0.45, 0.2])[0]
-    file_path = random.choice(FILES)
-    ai_risk_score = random.randint(5, 100)
-    mitre = random.choice(MITRE)
-    user = random.choice(USERS)
-    process = random.choice(PROCESSES)
-    old_hash = f"old_{random.getrandbits(32):08x}"
-    new_hash = f"new_{random.getrandbits(32):08x}"
-    host = random.choice(HOSTS)
-    site = random.choice(SITES)
-    event_id = f"evt-{random.getrandbits(20):05x}"
-    reason = (
-        f"{event_type.title()} detected on {file_path} by {process}; "
-        f"mapped to MITRE {mitre} and scored by AI risk engine."
-    )
+df = load_events_from_api()
 
-    st.session_state.events.append(
-        {
-            "event_id": event_id,
-            "timestamp": now,
-            "event_type": event_type,
-            "file_path": file_path,
-            "ai_risk_score": ai_risk_score,
-            "mitre_technique": mitre,
-            "user": user,
-            "process": process,
-            "old_hash": old_hash,
-            "new_hash": new_hash,
-            "host": host,
-            "site": site,
-            "reason": reason,
-        }
-    )
-
-    # Keep the buffer small for demo purposes
-    if len(st.session_state.events) > 150:
-        st.session_state.events = st.session_state.events[-150:]
-
-
-# Demo: add a new event on each refresh
-add_random_event()
-
-# DataFrame
-if not st.session_state.events:
-    st.warning("No events yet.")
+if df.empty:
+    st.info("Hələ API-dən event gəlmir.")
     st.stop()
 
-df = pd.DataFrame(st.session_state.events)
 df = df.sort_values("timestamp", ascending=False).reset_index(drop=True)
+
+# Normalize expected columns and fallbacks
+defaults: Dict[str, str | int] = {
+    "event_type": "unknown",
+    "file_path": "(unknown)",
+    "mitre_technique": "unknown",
+    "user": "unknown",
+    "process": "unknown",
+    "host": "unknown",
+    "site": "unknown",
+    "reason": "No description provided.",
+    "old_hash": "-",
+    "new_hash": "-",
+}
+
+for col, default in defaults.items():
+    if col not in df.columns:
+        df[col] = default
+    else:
+        df[col] = df[col].fillna(default)
+
+df["ai_risk_score"] = pd.to_numeric(df.get("ai_risk_score", 0), errors="coerce").fillna(0).astype(int)
+
+if "event_id" not in df.columns:
+    df["event_id"] = [f"evt-{i:05d}" for i in range(len(df))]
 
 # =============================================================
 # Sidebar filters
 # =============================================================
 st.sidebar.header("Filters")
 
-preset_start = datetime.now() - timedelta(hours=2)
-time_range = st.sidebar.slider(
-    "Time window",
-    min_value=preset_start,
-    max_value=datetime.now(),
-    value=(preset_start, datetime.now()),
-    step=timedelta(minutes=5),
-)
+min_ts = df["timestamp"].min()
+max_ts = df["timestamp"].max()
+default_start = max(min_ts, max_ts - timedelta(hours=2))
+
+if min_ts == max_ts:
+    time_range = (min_ts.to_pydatetime(), max_ts.to_pydatetime())
+else:
+    time_range = st.sidebar.slider(
+        "Time window",
+        min_value=min_ts.to_pydatetime(),
+        max_value=max_ts.to_pydatetime(),
+        value=(default_start.to_pydatetime(), max_ts.to_pydatetime()),
+        step=timedelta(minutes=5),
+    )
+
+event_types = sorted(df["event_type"].dropna().unique().tolist())
+mitre_options = sorted(df["mitre_technique"].dropna().unique().tolist())
+users = sorted(df["user"].dropna().unique().tolist())
+processes = sorted(df["process"].dropna().unique().tolist())
+hosts = sorted(df["host"].dropna().unique().tolist())
 
 mitre_filter = st.sidebar.multiselect(
     "MITRE techniques",
-    options=sorted(MITRE),
-    default=MITRE,
+    options=mitre_options,
+    default=mitre_options,
 )
 
 event_type_filter = st.sidebar.multiselect(
     "Event type",
-    options=EVENT_TYPES,
-    default=EVENT_TYPES,
+    options=event_types,
+    default=event_types,
 )
 
-user_filter = st.sidebar.multiselect("User", options=sorted(set(USERS)), default=USERS)
+user_filter = st.sidebar.multiselect("User", options=users, default=users)
 process_filter = st.sidebar.multiselect(
     "Process",
-    options=sorted(set(PROCESSES)),
-    default=PROCESSES,
+    options=processes,
+    default=processes,
 )
 
-host_filter = st.sidebar.multiselect("Host", options=sorted(set(HOSTS)), default=HOSTS)
+host_filter = st.sidebar.multiselect("Host", options=hosts, default=hosts)
 
 min_risk = st.sidebar.slider(
     "Minimum AI risk score",
@@ -275,8 +262,8 @@ with table_col:
 
     df_display = df.copy()
     df_display["timestamp"] = df_display["timestamp"].apply(format_timestamp)
-    df_display["severity"] = df_display["ai_risk_score"].apply(severity_badge)
-    df_display["mitre"] = df_display["mitre_technique"].apply(mitre_badge)
+    df_display["severity"] = df_display["ai_risk_score"].apply(classify_risk).str.upper()
+    df_display["mitre"] = df_display["mitre_technique"]
 
     st.dataframe(
         df_display[
@@ -295,7 +282,7 @@ with table_col:
             ]
         ]
         .style.format({"ai_risk_score": "{:.0f}"})
-        .hide_index(),
+        .hide(axis="index"),
         use_container_width=True,
         height=520,
     )
@@ -355,6 +342,4 @@ with timeline_col:
             unsafe_allow_html=True,
         )
 
-st.caption(
-    "Demo only – production would stream from /events, enrich with IAM + EDR context, and persist to SIEM."
-)
+st.caption("Data is pulled from the live /events API endpoint (limit=100).")
