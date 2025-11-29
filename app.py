@@ -333,3 +333,45 @@ with timeline_col:
         )
 
 st.caption("Data is pulled from the live /events API endpoint (limit=100).")
+
+# =============================================================
+# Hash overview tables
+# =============================================================
+
+st.subheader("🔑 SHA256 overview")
+
+hash_prev_col, hash_new_col = st.columns(2)
+
+hash_df = (
+    df[
+        [
+            "timestamp",
+            "event_id",
+            "file_path",
+            "old_hash",
+            "new_hash",
+        ]
+    ]
+    .sort_values("timestamp", ascending=False)
+    .assign(timestamp=lambda d: d["timestamp"].apply(format_timestamp))
+)
+
+with hash_prev_col:
+    st.markdown("**Previous SHA256**")
+    st.dataframe(
+        hash_df[["timestamp", "event_id", "file_path", "old_hash"]]
+        .rename(columns={"old_hash": "previous_sha256"})
+        .style.hide(axis="index"),
+        use_container_width=True,
+        height=350,
+    )
+
+with hash_new_col:
+    st.markdown("**Current SHA256**")
+    st.dataframe(
+        hash_df[["timestamp", "event_id", "file_path", "new_hash"]]
+        .rename(columns={"new_hash": "sha256"})
+        .style.hide(axis="index"),
+        use_container_width=True,
+        height=350,
+    )
