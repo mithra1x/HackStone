@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import Dict, List
+from typing import Dict
 
 import pandas as pd
 import plotly.express as px
@@ -18,7 +18,39 @@ st.set_page_config(
     page_icon="🔐",
 )
 
-st.title("🔐 File Integrity Monitoring Command Center")
+st.markdown(
+    """
+    <style>
+    .app-bg {
+        background: radial-gradient(circle at 20% 20%, #0f172a, #020617 60%);
+        color: #e2e8f0;
+        padding: 18px 28px;
+        border-radius: 14px;
+        box-shadow: 0 25px 50px -12px rgba(15, 23, 42, 0.85);
+    }
+    .metric-card {
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+        padding: 12px;
+    }
+    .section-divider {
+        margin: 14px 0 2px 0;
+        height: 1px;
+        background: linear-gradient(90deg, #22d3ee, rgba(34, 211, 238, 0));
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    "<div class='app-bg'>\n"
+    "<h1 style='margin-bottom:0;'>🔐 File Integrity Monitoring Command Center</h1>"
+    "<p style='color:#cbd5e1;margin-top:4px;'>Unified timeline, KPIs, and response aids in a single view.</p>"
+    "</div>",
+    unsafe_allow_html=True,
+)
 
 # =============================================================
 # Auto-refresh (every 3 seconds)
@@ -173,37 +205,17 @@ def mini_timeline(events: pd.DataFrame, *, title: str, limit: int = 12) -> None:
 
 
 # =============================================================
-# Navigation and filters (hamburger layout)
+# Filters (single-page layout)
 # =============================================================
-menu_tree: Dict[str, List[str] | None] = {
-    "Overview (Home)": None,
-    "Investment Portfolio": ["Assets / Liabilities", "Risk Indicators", "Performance & Yield"],
-    "Liquidity Management": None,
-    "Risk Management": ["VaR, Duration, Convexity", "Stress Testing Results"],
-    "Reports & Data Export": None,
-    "Administration / Settings": None,
-}
+min_ts = df["timestamp"].min()
+max_ts = df["timestamp"].max()
+default_start = max(min_ts, max_ts - timedelta(hours=2))
 
-st.sidebar.title("☰ Menu")
-selected_menu = st.sidebar.radio(
-    "Primary navigation",
-    options=list(menu_tree.keys()),
-    label_visibility="collapsed",
-)
-sub_selection = None
-if menu_tree[selected_menu]:
-    sub_selection = st.sidebar.radio(
-        "Section",
-        options=menu_tree[selected_menu],
-        label_visibility="visible",
-        key=f"submenu-{selected_menu}",
-    )
+st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
+filter_col1, filter_col2, filter_col3 = st.columns([2.6, 1.6, 1.6])
 
-with st.sidebar.expander("Filters", expanded=True):
-    min_ts = df["timestamp"].min()
-    max_ts = df["timestamp"].max()
-    default_start = max(min_ts, max_ts - timedelta(hours=2))
-
+with filter_col1:
+    st.markdown("#### Filters")
     if min_ts == max_ts:
         time_range = (min_ts.to_pydatetime(), max_ts.to_pydatetime())
     else:
@@ -215,19 +227,25 @@ with st.sidebar.expander("Filters", expanded=True):
             step=timedelta(minutes=5),
         )
 
+with filter_col2:
     event_types = sorted(df["event_type"].dropna().unique().tolist())
     mitre_options = sorted(df["mitre_technique"].dropna().unique().tolist())
+    mitre_filter = st.multiselect("MITRE techniques", options=mitre_options, default=mitre_options)
+    event_type_filter = st.multiselect("Event type", options=event_types, default=event_types)
+
+with filter_col3:
     users = sorted(df["user"].dropna().unique().tolist())
     processes = sorted(df["process"].dropna().unique().tolist())
     hosts = sorted(df["host"].dropna().unique().tolist())
-
-    mitre_filter = st.multiselect("MITRE techniques", options=mitre_options, default=mitre_options)
-    event_type_filter = st.multiselect("Event type", options=event_types, default=event_types)
     user_filter = st.multiselect("User", options=users, default=users)
     process_filter = st.multiselect("Process", options=processes, default=processes)
     host_filter = st.multiselect("Host", options=hosts, default=hosts)
 
+st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
+col_focus, col_risk = st.columns([1, 2.5])
+with col_focus:
     focus_high = st.checkbox("Focus on high & critical only", value=False)
+with col_risk:
     min_risk = 70 if focus_high else st.slider(
         "Minimum AI risk score", min_value=0, max_value=100, value=40, step=5
     )
@@ -370,7 +388,7 @@ def render_overview() -> None:
 
 
 def render_assets() -> None:
-    st.markdown("## Assets / Liabilities")
+    st.markdown("### Assets / Liabilities")
     st.caption("Surface hosts, files, and hotspots with the most business impact.")
 
     col1, col2, col3 = st.columns(3)
@@ -399,7 +417,7 @@ def render_assets() -> None:
 
 
 def render_risk_indicators() -> None:
-    st.markdown("## Risk Indicators")
+    st.markdown("### Risk Indicators")
     st.caption("Prioritize which techniques and users pose the most risk.")
 
     col1, col2 = st.columns(2)
@@ -422,7 +440,7 @@ def render_risk_indicators() -> None:
 
 
 def render_performance_yield() -> None:
-    st.markdown("## Performance & Yield")
+    st.markdown("### Performance & Yield")
     st.caption("Change velocity and signal quality to validate monitoring coverage.")
 
     timeline = (
@@ -520,25 +538,37 @@ def render_admin() -> None:
     st.metric("Unique MITRE techniques", filtered["mitre_technique"].nunique())
 
 
-# =============================================================
-# Router
-# =============================================================
-if selected_menu == "Overview (Home)":
-    render_overview()
-elif selected_menu == "Investment Portfolio":
-    if sub_selection == "Assets / Liabilities":
-        render_assets()
-    elif sub_selection == "Risk Indicators":
-        render_risk_indicators()
-    elif sub_selection == "Performance & Yield":
-        render_performance_yield()
-elif selected_menu == "Liquidity Management":
+st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
+render_overview()
+
+st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
+st.markdown("## Portfolio & Risk")
+portfolio_tabs = st.tabs([
+    "Assets / Liabilities",
+    "Risk Indicators",
+    "Performance & Yield",
+])
+with portfolio_tabs[0]:
+    render_assets()
+with portfolio_tabs[1]:
+    render_risk_indicators()
+with portfolio_tabs[2]:
+    render_performance_yield()
+
+st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
+st.markdown("## Liquidity & Risk Ops")
+col_liq, col_risk_ops = st.columns([1.05, 1])
+with col_liq:
     render_liquidity()
-elif selected_menu == "Risk Management":
+with col_risk_ops:
     render_risk_management()
-elif selected_menu == "Reports & Data Export":
+
+st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
+st.markdown("## Exports & Administration")
+col_reports, col_admin = st.columns([1.3, 1])
+with col_reports:
     render_reports()
-elif selected_menu == "Administration / Settings":
+with col_admin:
     render_admin()
 
 st.caption("Data is pulled from the live /events API endpoint (limit=100).")
