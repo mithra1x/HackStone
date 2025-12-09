@@ -1,0 +1,14 @@
+{
+  "name": "fim-server",
+  "version": "1.0.0",
+  "description": "Real-time file integrity monitoring server",
+  "main": "index.js",
+  "private": true,
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "keywords": ["fim", "security", "monitoring"],
+  "license": "MIT",
+  "type": "commonjs"
+}
