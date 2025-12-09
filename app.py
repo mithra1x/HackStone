@@ -253,6 +253,61 @@ with chart_col3:
     st.plotly_chart(fig_time, use_container_width=True)
 
 # =============================================================
+# Hash change analytics
+# =============================================================
+hash_section = st.container()
+
+with hash_section:
+    st.subheader("🔁 File hash transitions")
+
+    hash_df = df[(df["old_hash"] != "-") | (df["new_hash"] != "-")].copy()
+
+    if hash_df.empty:
+        st.info("No hash data available for the current filters.")
+    else:
+        chart_col_a, chart_col_b = st.columns([1.1, 1.9])
+
+        with chart_col_a:
+            transition_counts = (
+                hash_df.groupby(["old_hash", "new_hash"]).size().reset_index(name="count")
+            )
+
+            fig_hash = px.density_heatmap(
+                transition_counts,
+                x="old_hash",
+                y="new_hash",
+                z="count",
+                color_continuous_scale="Blues",
+                height=380,
+                text_auto=True,
+            )
+            fig_hash.update_layout(xaxis_title="Before hash", yaxis_title="After hash")
+            st.plotly_chart(fig_hash, use_container_width=True)
+
+        with chart_col_b:
+            st.markdown("**Hash change table**")
+            hash_table = (
+                hash_df[["timestamp", "file_path", "old_hash", "new_hash", "ai_risk_score", "event_id"]]
+                .sort_values("timestamp", ascending=False)
+            )
+            hash_table["timestamp"] = hash_table["timestamp"].apply(format_timestamp)
+
+            st.dataframe(
+                hash_table.rename(
+                    columns={
+                        "timestamp": "Time",
+                        "file_path": "File path",
+                        "old_hash": "Before hash",
+                        "new_hash": "After hash",
+                        "ai_risk_score": "Risk",
+                        "event_id": "Event ID",
+                    }
+                ),
+                use_container_width=True,
+                height=380,
+            )
+
+# =============================================================
 # Main layout: Table + Details + Timeline
 # =============================================================
 table_col, detail_col, timeline_col = st.columns([2.6, 1.6, 1.4])
