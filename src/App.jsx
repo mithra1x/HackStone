@@ -4,71 +4,74 @@ import { Panel } from './components/Panel';
 import { Timeline } from './components/Timeline';
 import { Metric } from './components/Metric';
 
-const portfolio = {
-  netAssetValue: '$4.2B',
-  change: '+1.3% WoW',
-  riskScore: 'Low',
-  liquidityDays: '14.2',
+const integrity = {
+  directory: '/var/secure/watch',
+  status: 'Clean baseline',
+  tone: 'good',
+  baselineFiles: '327 files hashed',
+  baselineHash: 'SHA-256 chain ok',
+  lastScan: '10:15:23 UTC',
+  logChain: 'HMAC sealed logs',
 };
 
 const segments = [
-  { title: 'Assets', value: '$3.7B', detail: 'Equities, fixed income, alternatives' },
-  { title: 'Liabilities', value: '$1.5B', detail: 'Short-term notes, credit facilities' },
-  { title: 'Unrealized P&L', value: '+$42M', detail: 'Driven by growth in healthcare & energy' },
+  { title: 'Creates', value: '2 (24h)', detail: 'New policy.yml and agent.conf allowlist' },
+  { title: 'Modifies', value: '5', detail: 'config.yaml, sudoers (T1547 Init)', },
+  { title: 'Deletes', value: '0', detail: 'Quarantine on delete prevents loss' },
 ];
 
-const riskMetrics = [
-  { label: 'VaR (95%, 1d)', value: '$18.5M', trend: '+0.6%', status: 'caution' },
-  { label: 'Duration', value: '4.8y', trend: '-0.2y', status: 'good' },
-  { label: 'Convexity', value: '0.32', trend: '+0.03', status: 'neutral' },
-  { label: 'Liquidity Coverage', value: '118%', trend: '+6%', status: 'good' },
+const guardrailMetrics = [
+  { label: 'Baseline coverage', value: '327 files', trend: '+12 new', status: 'good', detail: 'Hidden/PII skipped per policy' },
+  { label: 'Hash chain health', value: 'Stable', trend: 'OK', status: 'good', detail: 'SHA-256 + HMAC per log entry' },
+  { label: 'Alerts last 24h', value: '5', trend: '3 high', status: 'caution', detail: 'Mapped to T1547, T1070, T1562' },
+  { label: 'Mean time to respond', value: '12m', trend: '-4m', status: 'good', detail: 'Auto ticket + Slack dispatch' },
 ];
 
 const alerts = [
   {
-    time: '09:42',
+    time: '10:12:48',
     severity: 'critical',
-    title: 'Liquidity drawdown exceeds threshold',
-    description: 'Short-term facility utilization climbed to 76% after settlement.',
+    title: 'Sensitive config modified',
+    description: 'config.yaml tampered outside maintenance window. MITRE T1547 (persistence).',
   },
   {
-    time: '09:10',
+    time: '09:51:03',
     severity: 'high',
-    title: 'Stress test breach: credit spread widening',
-    description: 'Credit stress scenario shows -4.8% loss versus -3% tolerance.',
+    title: 'Unexpected binary created',
+    description: 'New file /var/secure/watch/tmp/.helper flagged as executable. T1059 (execution).',
   },
   {
-    time: '08:25',
-    severity: 'medium',
-    title: 'Limit utilization trending upward',
-    description: 'Hedge book consumed 67% of options budget this week.',
+    time: '09:15:22',
+    severity: 'high',
+    title: 'Log chain verification failed (resolved)',
+    description: 'Previous block hash mismatch auto-healed via backup copy.',
   },
 ];
 
 const activities = [
   {
-    time: '10:15',
-    title: 'Rebalanced tactical tilt',
-    description: 'Shifted +1.5% into cash, trimmed growth sleeve to reduce beta.',
-    actor: 'Auto-policy',
+    time: '10:13:10',
+    title: 'Auto-reverted config.yaml',
+    description: 'Restored trusted hash, opened ticket RIM-184, alerted SecOps.',
+    actor: 'FIM agent',
   },
   {
-    time: '09:58',
-    title: 'Executed liquidity ladder roll',
-    description: 'Rolled $75M commercial paper into 30-day buckets; improved coverage.',
-    actor: 'Trader L. Bennett',
+    time: '10:05:40',
+    title: 'Baseline refresh queued',
+    description: 'Scheduled rescan after policy change; personal data paths excluded.',
+    actor: 'Change manager',
   },
   {
-    time: '09:21',
-    title: 'Risk scenario rerun',
-    description: 'Updated macro shock inputs; VaR drift contained under target band.',
-    actor: 'Risk Engine',
+    time: '09:52:10',
+    title: 'Process snapshot taken',
+    description: 'Collected ps aux + open files for correlation. MITRE T1057 (discovery).',
+    actor: 'FIM agent',
   },
   {
-    time: '08:47',
-    title: 'New data export',
-    description: 'Generated holdings pack and exposure by currency for Treasury.',
-    actor: 'Reporting Bot',
+    time: '09:30:00',
+    title: 'Audit export generated',
+    description: 'Signed CSV of create/modify/delete events for compliance.',
+    actor: 'Reporting bot',
   },
 ];
 
@@ -77,42 +80,40 @@ export default function App() {
     <div className="app-shell">
       <header className="hero">
         <div>
-          <p className="eyebrow">Unified finance command center</p>
-          <h1>Portfolio, liquidity, and risk in one view</h1>
+          <p className="eyebrow">Real-time file integrity monitoring</p>
+          <h1>Watch critical directories with secure baselines</h1>
           <p className="subtext">
-            Track priority actions with live status, surface alerts by severity, and export reports without
-            switching contexts.
+            Highlight what changed, when, and why it matters—aligned to MITRE tactics—while protecting privacy and log integrity.
           </p>
           <div className="chips">
-            <span className="chip">Real-time</span>
-            <span className="chip">Single page</span>
-            <span className="chip">Enterprise-ready</span>
+            <span className="chip">Create / Modify / Delete</span>
+            <span className="chip">Hash-chained logs</span>
+            <span className="chip">PII-aware policies</span>
           </div>
         </div>
         <div className="filters">
           <div className="filter">
-            <label>Portfolio</label>
+            <label>Directory</label>
             <select>
-              <option>Global Multi-Strategy</option>
-              <option>Core Fixed Income</option>
-              <option>Alternatives</option>
+              <option>/var/secure/watch</option>
+              <option>/etc</option>
+              <option>/opt/apps</option>
             </select>
           </div>
           <div className="filter">
-            <label>View</label>
+            <label>Window</label>
             <select>
-              <option>Today</option>
-              <option>7D</option>
-              <option>MTD</option>
-              <option>QTD</option>
+              <option>Last hour</option>
+              <option>24h</option>
+              <option>7d</option>
             </select>
           </div>
           <div className="filter">
-            <label>Priority</label>
+            <label>Alert level</label>
             <select>
-              <option>Critical & High</option>
-              <option>All Alerts</option>
-              <option>Mute Low</option>
+              <option>Critical / High</option>
+              <option>All severities</option>
+              <option>Mute low</option>
             </select>
           </div>
         </div>
@@ -120,53 +121,53 @@ export default function App() {
 
       <main>
         <section className="grid">
-          <Panel title="Overview" subtitle="Momentum, coverage, and headline risk">
+          <Panel title="Integrity overview" subtitle="Baseline health, coverage, and recent change rates">
             <div className="overview-grid">
-              <PortfolioCard portfolio={portfolio} segments={segments} />
+              <PortfolioCard integrity={integrity} segments={segments} />
               <div className="stacked">
                 <div className="row">
-                  <Metric label="Cash runway" value="7.5 months" status="good" detail="Powered by liquidity ladder" />
-                  <Metric label="Counterparty" value="97% clean" status="good" detail="No pending breaks" />
+                  <Metric label="Baseline freshness" value="6m ago" status="good" detail="Auto rescan after updates" />
+                  <Metric label="PII exclusions" value="12 paths" status="neutral" detail="/home/* and temp caches" />
                 </div>
                 <div className="row">
-                  <Metric label="Open exceptions" value="3" status="caution" detail="2 liquidity, 1 risk" />
-                  <Metric label="Reports ready" value="12" status="neutral" detail="Exports updated 5m ago" />
+                  <Metric label="Open tickets" value="3" status="caution" detail="2 high, 1 medium" />
+                  <Metric label="Alerts routed" value="Slack + SIEM" status="good" detail="Webhook + syslog mirror" />
                 </div>
               </div>
             </div>
           </Panel>
 
-          <Panel title="Risk & Liquidity" subtitle="Track coverage, stress, and sensitivity"> 
+          <Panel title="Detection & Integrity" subtitle="Hash coverage, alert volume, and response times">
             <div className="metrics-grid">
-              {riskMetrics.map((metric) => (
+              {guardrailMetrics.map((metric) => (
                 <Metric key={metric.label} {...metric} />
               ))}
             </div>
             <div className="dual">
               <Timeline title="Priority alerts" items={alerts} emphasize />
-              <Timeline title="Latest activity" items={activities} />
+              <Timeline title="Latest actions" items={activities} />
             </div>
           </Panel>
 
-          <Panel title="Exports & Admin" subtitle="Share insights and keep guardrails in place">
+          <Panel title="Governance & Export" subtitle="Share evidence, policies, and audit artifacts">
             <div className="exports">
               <div className="export-card">
-                <h3>Reports & Data</h3>
-                <p>Export holdings, exposure by factor, and liquidity ladders in a single click.</p>
-                <button>Generate pack</button>
-                <button className="ghost">Schedule send</button>
+                <h3>Audit log</h3>
+                <p>Download hash-chained create/modify/delete timeline with UTC stamps.</p>
+                <button>Download CSV</button>
+                <button className="ghost">Copy webhook URL</button>
               </div>
               <div className="export-card">
-                <h3>Controls</h3>
-                <p>Manage thresholds, approvals, and notification routing across teams.</p>
-                <button>Open settings</button>
-                <button className="ghost">Audit log</button>
+                <h3>Policy</h3>
+                <p>Manage exclusions to avoid personal data and tune MITRE mapping.</p>
+                <button>Update policy</button>
+                <button className="ghost">View diff</button>
               </div>
               <div className="export-card">
-                <h3>Access</h3>
-                <p>Review entitlements and track sign-ins to maintain clean governance.</p>
-                <button>Review access</button>
-                <button className="ghost">Download policy</button>
+                <h3>Integrity checks</h3>
+                <p>Verify log chain, baseline hash, and tamper flags across nodes.</p>
+                <button>Run verification</button>
+                <button className="ghost">View last proof</button>
               </div>
             </div>
           </Panel>

@@ -1,25 +1,35 @@
-export function PortfolioCard({ portfolio, segments }) {
+export function PortfolioCard({ integrity, segments }) {
   return (
     <div className="portfolio-card">
       <div className="card-head">
-        <h3>Portfolio health</h3>
+        <h3>Integrity snapshot</h3>
         <span className="pill">Live</span>
       </div>
       <div className="headline">
         <div>
-          <p className="label">Net asset value</p>
-          <h2>{portfolio.netAssetValue}</h2>
+          <p className="label">Watched directory</p>
+          <h2>{integrity.directory}</h2>
         </div>
-        <div className="badge good">{portfolio.change}</div>
+        <div className={`badge ${integrity.tone ?? 'neutral'}`}>{integrity.status}</div>
       </div>
       <div className="details">
         <div>
-          <p className="label">Risk score</p>
-          <p className="value">{portfolio.riskScore}</p>
+          <p className="label">Baseline coverage</p>
+          <p className="value">{integrity.baselineFiles}</p>
         </div>
         <div>
-          <p className="label">Liquidity days</p>
-          <p className="value">{portfolio.liquidityDays}</p>
+          <p className="label">Baseline hash</p>
+          <p className="value">{integrity.baselineHash}</p>
+        </div>
+      </div>
+      <div className="details">
+        <div>
+          <p className="label">Last scan</p>
+          <p className="value">{integrity.lastScan}</p>
+        </div>
+        <div>
+          <p className="label">Log integrity</p>
+          <p className="value">{integrity.logChain}</p>
         </div>
       </div>
       <div className="divider" />

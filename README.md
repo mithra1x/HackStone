@@ -1,6 +1,6 @@
-# React Command-Center Dashboard
+# React FIM Command Center
 
-A single-page React dashboard that presents portfolio, liquidity, risk, and reporting actions in one workspace. The layout favors quick scanning with live-style badges, priority alerts, and export/admin controls without page hops.
+A single-page React dashboard for a real-time File Integrity Monitoring (FIM) system. It surfaces create/modify/delete events, baseline health, MITRE-aligned alerts, and governance controls in one view so responders can pivot quickly without navigating between pages.
 
 ## Getting started
 
@@ -23,13 +23,13 @@ A single-page React dashboard that presents portfolio, liquidity, risk, and repo
 
 ## Layout highlights
 
-- **Hero + filters**: top hero banner with quick portfolio/view/priority selectors.
-- **Overview**: portfolio health card plus operational stats (cash runway, exceptions, reports ready).
-- **Risk & liquidity**: grid of VaR/duration/convexity/liquidity coverage, alongside priority alerts and recent activity timelines.
-- **Exports & admin**: shortcuts for report generation, controls, and access reviews.
+- **Hero + filters**: top banner with directory/time/severity filters and badges for create/modify/delete coverage.
+- **Integrity overview**: baseline coverage, chain status, last scan, and change counts for the watched directory.
+- **Detection & integrity**: metrics for hash coverage, alert volume, response times, and MITRE-mapped detections alongside alert and action timelines.
+- **Governance & export**: controls to download hash-chained audit logs, adjust exclusion policies (to avoid personal data), and verify log-chain integrity.
 
 ## Customization
 
-- Update labels, numbers, and alerts directly in `src/App.jsx`.
+- Update labels, paths, and MITRE mappings directly in `src/App.jsx`.
 - Adjust styling via the theme tokens and layouts in `src/index.css`.
-- Extend components in `src/components/` to add new cards or tables.
+- Extend components in `src/components/` to add new cards, tabs, or tables specific to your FIM agent.
