@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Real-Time File Integrity Monitoring</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useEffect, useMemo, useState } = React;
+
+    const iconMap = {
+      create: '🟢',
+      modify: '🟡',
+      delete: '🔴',
+      baseline: '📐'
+    };
+
+    const severityHue = {
+      high: 'var(--red)',
+      medium: 'var(--amber)',
+      info: 'var(--green)'
+    };
+
+    const formatTime = (ts) => new Intl.DateTimeFormat('en', {
+      dateStyle: 'medium',
+      timeStyle: 'medium'
+    }).format(new Date(ts));
+
+    function useFimEvents() {
+      const [events, setEvents] = useState([]);
+      const [status, setStatus] = useState('connecting');
+      const [baselineSize, setBaselineSize] = useState(0);
+
+      useEffect(() => {
+        fetch('/api/events')
+          .then((res) => res.json())
+          .then((data) => {
+            setEvents(data.events || []);
+            setBaselineSize(data.baselineSize || 0);
+            setStatus('ready');
+          })
+          .catch(() => setStatus('error'));
+
+        const source = new EventSource('/stream');
+        source.onopen = () => setStatus('streaming');
+        source.onerror = () => setStatus('disconnected');
+        source.onmessage = (evt) => {
+          const payload = JSON.parse(evt.data);
+          if (!payload.type || payload.type === 'connected') return;
+          setEvents((prev) => [payload, ...prev].slice(0, 200));
+        };
+        return () => source.close();
+      }, []);
+
+      const counters = useMemo(() => {
+        return events.reduce(
+          (acc, evt) => {
+            acc[evt.type] = (acc[evt.type] || 0) + 1;
+            return acc;
+          },
+          { create: 0, modify: 0, delete: 0 }
+        );
+      }, [events]);
+
+      return { events, status, counters, baselineSize, setEvents, setBaselineSize };
+    }
+
+    function Pill({ label, color }) {
+      return <span className="pill" style={{ backgroundColor: color }}>{label}</span>;
+    }
+
+    function StatCard({ title, value, hint }) {
+      return (
+        <div className="stat-card">
+          <p className="stat-title">{title}</p>
+          <p className="stat-value">{value}</p>
+          {hint && <p className="stat-hint">{hint}</p>}
+        </div>
+      );
+    }
+
+    function EventRow({ evt }) {
+      const icon = iconMap[evt.type] || 'ℹ️';
+      return (
+        <div className="event-row">
+          <div className="event-icon">{icon}</div>
+          <div className="event-body">
+            <div className="event-header">
+              <div>
+                <p className="event-title">{evt.message}</p>
+                <p className="event-path">{evt.file || 'Baseline update'}</p>
+              </div>
+              {evt.mitre && (
+                <Pill
+                  label={`${evt.mitre.id} · ${evt.mitre.name}`}
+                  color="var(--slate)"
+                />
+              )}
+            </div>
+            <div className="event-meta">
+              <span className="timestamp">{formatTime(evt.timestamp)}</span>
+              {evt.beforeHash && (
+                <span className="hash">Prev: {evt.beforeHash.slice(0, 10)}…</span>
+              )}
+              {evt.afterHash && (
+                <span className="hash">New: {evt.afterHash.slice(0, 10)}…</span>
+              )}
+              {evt.severity && (
+                <Pill label={evt.severity.toUpperCase()} color={severityHue[evt.severity]} />
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function Toolbar({ baselineSize, onRebuild, status }) {
+      const statusCopy = {
+        streaming: 'Live feed active',
+        ready: 'Loaded from API',
+        connecting: 'Connecting…',
+        disconnected: 'Stream disconnected',
+        error: 'API unreachable'
+      };
+      return (
+        <div className="toolbar">
+          <div>
+            <p className="toolbar-title">Secure baseline: {baselineSize} files</p>
+            <p className="toolbar-sub">{statusCopy[status] || 'Monitoring'}</p>
+          </div>
+          <button className="btn" onClick={onRebuild}>Rebuild baseline</button>
+        </div>
+      );
+    }
+
+    function App() {
+      const { events, status, counters, baselineSize, setBaselineSize } = useFimEvents();
+      const [alert, setAlert] = useState('');
+
+      const rebuildBaseline = async () => {
+        setAlert('Rebuilding baseline…');
+        try {
+          const res = await fetch('/api/rebuild', { method: 'POST' });
+          const data = await res.json();
+          setBaselineSize(data.baselineSize || 0);
+          setAlert('Baseline rebuilt');
+          setTimeout(() => setAlert(''), 2000);
+        } catch (err) {
+          setAlert('Failed to rebuild baseline');
+        }
+      };
+
+      const latest = events[0];
+
+      return (
+        <main className="page">
+          <header className="hero">
+            <div>
+              <p className="eyebrow">Real-time File Integrity Monitoring</p>
+              <h1>Trust, but verify every file change</h1>
+              <p className="lede">
+                Watches a single critical directory, hashes every file, and streams create / modify / delete
+                activity with context tied to MITRE ATT&CK-style tactics.
+              </p>
+              <div className="pill-row">
+                <Pill label="Hashes are SHA-256" color="var(--slate)" />
+                <Pill label="Governance filter skips personal data" color="var(--slate)" />
+                <Pill label="Log integrity via append-only JSONL" color="var(--slate)" />
+              </div>
+            </div>
+          </header>
+
+          {alert && <div className="banner">{alert}</div>}
+
+          <Toolbar baselineSize={baselineSize} onRebuild={rebuildBaseline} status={status} />
+
+          <section className="grid">
+            <StatCard title="Creates" value={counters.create} hint="New files in scope" />
+            <StatCard title="Modifications" value={counters.modify} hint="Content tampering" />
+            <StatCard title="Deletes" value={counters.delete} hint="Potential destruction" />
+          </section>
+
+          {latest && (
+            <section className="alert-card">
+              <div className="alert-icon">{iconMap[latest.type] || '⚠️'}</div>
+              <div>
+                <p className="alert-title">Most recent action</p>
+                <p className="alert-body">{latest.message}</p>
+                <p className="alert-meta">{formatTime(latest.timestamp)}</p>
+              </div>
+            </section>
+          )}
+
+          <section className="timeline">
+            <div className="timeline-head">
+              <h2>Timeline of actions</h2>
+              <p className="timeline-sub">Showing up to 200 latest changes</p>
+            </div>
+            <div className="timeline-list">
+              {events.map((evt) => (
+                <EventRow evt={evt} key={evt.id} />
+              ))}
+              {!events.length && <p className="empty">No events yet. Touch a file in the watched folder.</p>}
+            </div>
+          </section>
+
+          <section className="howto">
+            <h3>Operational notes</h3>
+            <ul>
+              <li>Monitors the <code>watched/</code> directory. Update config in <code>server/index.js</code> if needed.</li>
+              <li>Baseline hashes are stored at <code>data/baseline.json</code>. Use the rebuild button after trusted maintenance.</li>
+              <li>Logs stream to <code>logs/fim.log</code> using JSON Lines to preserve integrity.</li>
+            </ul>
+          </section>
+        </main>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
