@@ -26,6 +26,7 @@ This repo contains a minimal, governance-aware FIM agent plus a tiny HTTP feed a
    ```bash
    streamlit run app.py
    ```
+   - The left hamburger menu mirrors an enterprise layout (Overview, Investment Portfolio, Liquidity/Risk Management, Reports, Administration) so you can jump straight to KPIs, hot assets, or export views with minimal clicks.
 
 ## Event format
 Each log entry is a JSON object containing:
