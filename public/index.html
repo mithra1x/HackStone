@@ -28,6 +28,12 @@
       info: 'var(--green)'
     };
 
+    const severityWeight = {
+      high: 6,
+      medium: 3,
+      info: 1
+    };
+
     const actionColors = {
       create: 'rgba(34, 197, 94, 0.9)',
       modify: 'rgba(245, 158, 11, 0.9)',
@@ -197,6 +203,57 @@
         }
       };
 
+      const riskModel = useMemo(() => {
+        const windowMs = 24 * 60 * 60 * 1000;
+        const hourMs = 60 * 60 * 1000;
+        const now = Date.now();
+        const windowStart = now - windowMs;
+        const buckets = Array.from({ length: 24 }, (_, idx) => {
+          const bucketStart = windowStart + idx * hourMs;
+          return {
+            label: new Intl.DateTimeFormat('en', { hour: '2-digit', hour12: false }).format(
+              new Date(bucketStart)
+            ),
+            score: 0,
+            actions: 0
+          };
+        });
+
+        events.forEach((evt) => {
+          if (!evt.timestamp || !evt.type) return;
+          const ts = new Date(evt.timestamp).getTime();
+          if (Number.isNaN(ts) || ts < windowStart || ts > now) return;
+          const idx = Math.min(Math.floor((ts - windowStart) / hourMs), buckets.length - 1);
+          if (!buckets[idx]) return;
+          const weight = severityWeight[evt.severity] || 1;
+          const decay = Math.max(0.35, 1 - (now - ts) / windowMs);
+          buckets[idx].score += weight * decay;
+          buckets[idx].actions += 1;
+        });
+
+        const maxScore = Math.max(...buckets.map((b) => b.score), 1);
+        const currentScore = buckets[buckets.length - 1]?.score || 0;
+        const normalized = Math.min(Math.round((currentScore / maxScore) * 100), 100);
+        let label = 'Low';
+        let copy = 'Changes look routine with no concentrated destructive activity.';
+        if (normalized >= 70) {
+          label = 'Critical';
+          copy = 'High-risk activity concentrated recently. Validate deletes and rebuild only if trusted.';
+        } else if (normalized >= 40) {
+          label = 'Elevated';
+          copy = 'Steady medium/high severity actions. Review audit trail and confirm operators.';
+        }
+
+        return {
+          buckets,
+          maxScore,
+          normalized,
+          label,
+          copy,
+          currentScore
+        };
+      }, [events]);
+
       const latest = events[0];
 
       return (
@@ -269,6 +326,41 @@
                   </div>
                 );
               })}
+            </div>
+          </section>
+
+          <section className="risk-card">
+            <div className="risk-head">
+              <div>
+                <p className="eyebrow">AI risk assessment</p>
+                <h2>Behavioral risk outlook</h2>
+                <p className="risk-sub">Weighted severity with recency decay across the last 24h.</p>
+              </div>
+              <div className={`risk-chip risk-${riskModel.label.toLowerCase()}`}>
+                <span className="risk-chip-score">{riskModel.normalized}</span>
+                <span className="risk-chip-text">{riskModel.label}</span>
+              </div>
+            </div>
+            <div className="risk-body">
+              <div className="risk-summary">
+                <p className="risk-score">{riskModel.normalized}</p>
+                <p className="risk-label">{riskModel.label} risk</p>
+                <p className="risk-copy">{riskModel.copy}</p>
+              </div>
+              <div className="risk-chart" role="img" aria-label="Risk score trend over last 24 hours">
+                {riskModel.buckets.map((bucket, idx) => {
+                  const height = (bucket.score / riskModel.maxScore) * 100;
+                  return (
+                    <div key={`${bucket.label}-${idx}`} className="risk-bar" title={`Hour ${bucket.label}: risk score ${bucket.score.toFixed(1)}`}>
+                      <div
+                        className="risk-bar-fill"
+                        style={{ height: `${height}%` }}
+                      />
+                      <p className="chart-label">{bucket.label}</p>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </section>
 
