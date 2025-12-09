@@ -28,6 +28,12 @@
       info: 'var(--green)'
     };
 
+    const actionColors = {
+      create: 'rgba(34, 197, 94, 0.9)',
+      modify: 'rgba(245, 158, 11, 0.9)',
+      delete: 'rgba(239, 68, 68, 0.9)'
+    };
+
     const formatTime = (ts) => new Intl.DateTimeFormat('en', {
       dateStyle: 'medium',
       timeStyle: 'medium'
@@ -144,6 +150,40 @@
       const { events, status, counters, baselineSize, setBaselineSize } = useFimEvents();
       const [alert, setAlert] = useState('');
 
+      const changesOverTime = useMemo(() => {
+        const windowMs = 24 * 60 * 60 * 1000;
+        const hourMs = 60 * 60 * 1000;
+        const now = Date.now();
+        const windowStart = now - windowMs;
+        const buckets = Array.from({ length: 24 }, (_, idx) => {
+          const bucketStart = windowStart + idx * hourMs;
+          return {
+            label: new Intl.DateTimeFormat('en', { hour: '2-digit', hour12: false }).format(
+              new Date(bucketStart)
+            ),
+            counts: { create: 0, modify: 0, delete: 0 }
+          };
+        });
+
+        events.forEach((evt) => {
+          if (!evt.timestamp) return;
+          const ts = new Date(evt.timestamp).getTime();
+          if (Number.isNaN(ts) || ts < windowStart || ts > now) return;
+          const idx = Math.min(Math.floor((ts - windowStart) / hourMs), buckets.length - 1);
+          if (!buckets[idx]) return;
+          if (evt.type === 'create' || evt.type === 'modify' || evt.type === 'delete') {
+            buckets[idx].counts[evt.type] += 1;
+          }
+        });
+
+        const maxTotal = Math.max(
+          ...buckets.map((b) => Object.values(b.counts).reduce((sum, val) => sum + val, 0)),
+          1
+        );
+
+        return { buckets, maxTotal };
+      }, [events]);
+
       const rebuildBaseline = async () => {
         setAlert('Rebuilding baseline…');
         try {
@@ -185,6 +225,51 @@
             <StatCard title="Creates" value={counters.create} hint="New files in scope" />
             <StatCard title="Modifications" value={counters.modify} hint="Content tampering" />
             <StatCard title="Deletes" value={counters.delete} hint="Potential destruction" />
+          </section>
+
+          <section className="chart">
+            <div className="chart-head">
+              <div>
+                <p className="eyebrow">Changes over time (last 24h)</p>
+                <h2>Action mix by hour</h2>
+              </div>
+              <div className="legend">
+                {Object.entries(actionColors).map(([type, color]) => (
+                  <div className="legend-item" key={type}>
+                    <span className="legend-swatch" style={{ backgroundColor: color }} />
+                    <span className="legend-label">{type}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="chart-grid">
+              {changesOverTime.buckets.map((bucket, idx) => {
+                const total = Object.values(bucket.counts).reduce((sum, v) => sum + v, 0);
+                return (
+                  <div className="chart-bar" key={`${bucket.label}-${idx}`}>
+                    <div className="bar-stack" aria-label={`Hour ${bucket.label}: ${total} changes`}>
+                      {['create', 'modify', 'delete'].map((type) => {
+                        const value = bucket.counts[type];
+                        const height = (value / changesOverTime.maxTotal) * 100;
+                        return (
+                          <div
+                            key={type}
+                            className="bar-segment"
+                            style={{
+                              height: `${height}%`,
+                              backgroundColor: actionColors[type],
+                              opacity: value ? 1 : 0.3
+                            }}
+                            title={`${bucket.label}: ${type} ${value}`}
+                          />
+                        );
+                      })}
+                    </div>
+                    <p className="chart-label">{bucket.label}</p>
+                  </div>
+                );
+              })}
+            </div>
           </section>
 
           {latest && (

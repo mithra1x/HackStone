@@ -39,6 +39,18 @@ h1 { margin: 0 0 12px; font-size: 32px; }
 
 .banner { margin: 16px 0; padding: 12px 16px; border-radius: 10px; background: rgba(56, 189, 248, 0.12); color: var(--text); border: 1px solid var(--border); }
 
+.chart { margin: 22px 0; padding: 16px; border-radius: 12px; border: 1px solid var(--border); background: var(--card); box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
+.chart-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.chart h2 { margin: 4px 0 0; }
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(44px, 1fr)); gap: 8px; margin-top: 14px; align-items: end; }
+.chart-bar { display: flex; flex-direction: column; gap: 8px; align-items: center; }
+.bar-stack { width: 100%; height: 160px; border-radius: 8px; background: rgba(148, 163, 184, 0.12); border: 1px solid var(--border); display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; }
+.bar-segment { width: 100%; transition: height 0.2s ease; }
+.chart-label { margin: 0; font-size: 12px; color: var(--muted); text-align: center; }
+.legend { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.legend-item { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+.legend-swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; border: 1px solid rgba(0,0,0,0.2); }
+
 .toolbar { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); box-shadow: 0 10px 30px rgba(0,0,0,0.25); margin-top: 16px; }
 .toolbar-title { margin: 0; font-weight: 700; }
 .toolbar-sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
