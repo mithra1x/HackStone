@@ -242,7 +242,7 @@
 
       return `
         <div class="pie-wrap">
-          <div class="pie-figure">
+          <figure class="pie-figure">
             <svg viewBox="-120 -120 240 240" role="img" aria-label="Action mix pie chart">
               ${slices.map((slice) => `
                 <path d="${slice.path}" fill="${actionColors[slice.type]}" fill-opacity="0.88" stroke="rgba(0,0,0,0.25)" stroke-width="1" />
@@ -250,8 +250,8 @@
               `).join('')}
               <circle r="45" fill="var(--card)" stroke="var(--border)" stroke-width="1" />
             </svg>
-            <p class="pie-total">${totalLabel}</p>
-          </div>
+            <figcaption class="pie-total">${totalLabel}</figcaption>
+          </figure>
           <div class="pie-legend">${legend}</div>
         </div>`;
     }
