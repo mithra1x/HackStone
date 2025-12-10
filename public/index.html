@@ -351,7 +351,11 @@
                 {riskModel.buckets.map((bucket, idx) => {
                   const height = (bucket.score / riskModel.maxScore) * 100;
                   return (
-                    <div key={`${bucket.label}-${idx}`} className="risk-bar" title={`Hour ${bucket.label}: risk score ${bucket.score.toFixed(1)}`}>
+                    <div
+                      key={`${bucket.label}-${idx}`}
+                      className="risk-bar"
+                      title={`Hour ${bucket.label}: risk score ${bucket.score.toFixed(1)}`}
+                    >
                       <div
                         className="risk-bar-fill"
                         style={{ height: `${height}%` }}
