@@ -24,6 +24,12 @@ const MITRE_LOOKUP = {
   delete: { id: 'T1485', name: 'Data Destruction' }
 };
 
+const AI_BASELINE = {
+  create: 25,
+  modify: 45,
+  delete: 65
+};
+
 function ensureDirectories() {
   [WATCH_DIR, DATA_DIR, LOG_DIR, PUBLIC_DIR].forEach((dir) => {
     if (!fs.existsSync(dir)) {
@@ -101,6 +107,55 @@ function logEvent(evt) {
   fs.appendFile(LOG_FILE, line + '\n', () => {});
 }
 
+function buildAiAssessment(kind, rel, before, after) {
+  const now = Date.now();
+  let score = AI_BASELINE[kind] || 20;
+
+  if (before && after && before !== after) {
+    score += 22;
+  } else if (!before && after) {
+    score += 12;
+  } else if (kind === 'delete' && before) {
+    score += 15;
+  }
+
+  const recentBurst = eventHistory.filter((evt) => {
+    if (!evt.file || evt.file !== rel) return false;
+    const ts = new Date(evt.timestamp).getTime();
+    return Number.isFinite(ts) && now - ts < 15 * 60 * 1000;
+  }).length;
+  if (recentBurst) {
+    score += Math.min(recentBurst * 8, 24);
+  }
+
+  const ext = path.extname(rel).toLowerCase();
+  if (['.sh', '.ps1', '.exe', '.dll', '.so', '.bat'].includes(ext)) {
+    score += 18;
+  } else if (['.json', '.yml', '.yaml', '.conf', '.ini'].includes(ext)) {
+    score += 8;
+  }
+
+  score = Math.min(Math.max(Math.round(score), 0), 100);
+
+  let label = 'Stable';
+  if (score >= 80) label = 'Critical';
+  else if (score >= 55) label = 'Elevated';
+  else if (score >= 35) label = 'Watch';
+
+  const reasons = [];
+  if (before && after && before !== after) reasons.push('hash changed');
+  if (!before && after) reasons.push('new baseline hash added');
+  if (kind === 'delete') reasons.push('asset removed from scope');
+  if (recentBurst > 1) reasons.push('burst of changes');
+  if (ext) reasons.push(`file type ${ext || 'unknown'}`);
+
+  return {
+    score,
+    label,
+    reason: reasons.length ? reasons.join(', ') : 'routine activity'
+  };
+}
+
 function pushEvent(evt) {
   eventHistory.unshift(evt);
   eventHistory = eventHistory.slice(0, 200);
@@ -140,7 +195,8 @@ async function handleChange(kind, filePath) {
     afterHash: after,
     mitre,
     severity: kind === 'delete' ? 'high' : kind === 'modify' ? 'medium' : 'info',
-    message: describeEvent(kind, rel, before, after)
+    message: describeEvent(kind, rel, before, after),
+    aiAssessment: buildAiAssessment(kind, rel, before, after)
   };
 
   pushEvent(evt);

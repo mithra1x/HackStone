@@ -47,6 +47,10 @@ h1 { margin: 0 0 12px; font-size: 32px; }
 .bar-stack { width: 100%; height: 160px; border-radius: 8px; background: rgba(148, 163, 184, 0.12); border: 1px solid var(--border); display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; }
 .bar-segment { width: 100%; transition: height 0.2s ease; }
 .chart-label { margin: 0; font-size: 12px; color: var(--muted); text-align: center; }
+.pie-area { margin-top: 14px; }
+.pie-wrap { display: grid; grid-template-columns: 320px 1fr; gap: 12px; align-items: center; }
+.pie-legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+.legend-count { color: var(--muted); font-size: 12px; }
 .legend { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 .legend-item { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
 .legend-swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; border: 1px solid rgba(0,0,0,0.2); }
@@ -96,6 +100,16 @@ h1 { margin: 0 0 12px; font-size: 32px; }
 .event-meta { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; color: var(--muted); font-size: 12px; }
 .hash { background: rgba(148, 163, 184, 0.08); padding: 6px 10px; border-radius: 8px; }
 .timestamp { font-weight: 700; color: var(--text); }
+.hash-table { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-top: 8px; background: rgba(255,255,255,0.02); }
+.hash-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
+.hash-row span { padding: 8px 10px; display: block; color: var(--text); word-break: break-all; }
+.hash-head span { background: rgba(148, 163, 184, 0.08); color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
+.ai-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--border); background: rgba(148, 163, 184, 0.12); color: var(--text); font-weight: 700; font-size: 12px; }
+.ai-chip.ai-critical { border-color: rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.16); color: var(--red); }
+.ai-chip.ai-elevated { border-color: rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.16); color: var(--amber); }
+.ai-chip.ai-watch { border-color: rgba(56, 189, 248, 0.4); background: rgba(56, 189, 248, 0.14); color: var(--accent); }
+.ai-chip.ai-stable { border-color: rgba(34, 197, 94, 0.4); background: rgba(34, 197, 94, 0.16); color: var(--green); }
+.ai-reason { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
 
 .howto { margin-top: 24px; padding: 16px; border-radius: 12px; border: 1px solid var(--border); background: var(--card); box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
 .howto ul { margin: 8px 0 0 18px; color: var(--muted); line-height: 1.6; }
