@@ -42,12 +42,17 @@ h1 { margin: 0 0 12px; font-size: 32px; }
 .chart { margin: 22px 0; padding: 16px; border-radius: 12px; border: 1px solid var(--border); background: var(--card); box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
 .chart-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .chart h2 { margin: 4px 0 0; }
+.chart h3 { margin: 4px 0 0; }
+.chart-subtitle { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+.chart-head-sub { margin-bottom: 6px; }
 .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(44px, 1fr)); gap: 8px; margin-top: 14px; align-items: end; }
 .chart-bar { display: flex; flex-direction: column; gap: 8px; align-items: center; }
 .bar-stack { width: 100%; height: 160px; border-radius: 8px; background: rgba(148, 163, 184, 0.12); border: 1px solid var(--border); display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; }
 .bar-segment { width: 100%; transition: height 0.2s ease; }
 .chart-label { margin: 0; font-size: 12px; color: var(--muted); text-align: center; }
-.pie-area { margin-top: 14px; }
+.chart-split { display: grid; grid-template-columns: minmax(320px, 1fr) 1.2fr; gap: 16px; margin-top: 16px; align-items: start; }
+.pie-area { margin-top: 6px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+.hourly-area { margin-top: 6px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
 .pie-wrap { display: grid; grid-template-columns: 320px 1fr; gap: 12px; align-items: center; }
 .pie-legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
 .legend-count { color: var(--muted); font-size: 12px; }

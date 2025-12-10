@@ -248,11 +248,27 @@
               <text x="${slice.labelX.toFixed(1)}" y="${slice.labelY.toFixed(1)}" fill="var(--text)" font-size="10" text-anchor="middle">${Math.round(slice.pct)}%</text>
             `).join('')}
             <circle r="45" fill="var(--card)" stroke="var(--border)" stroke-width="1" />
-            <text x="0" y="-6" fill="var(--muted)" font-size="10" text-anchor="middle">Action mix</text>
-            <text x="0" y="12" fill="var(--text)" font-size="16" font-weight="700" text-anchor="middle">${totalLabel}</text>
+            <text x="0" y="6" fill="var(--text)" font-size="16" font-weight="700" text-anchor="middle">${totalLabel}</text>
           </svg>
           <div class="pie-legend">${legend}</div>
         </div>`;
+    }
+
+    function renderHourlyChart(model) {
+      return model.buckets.map((bucket) => {
+        const total = Object.values(bucket.counts).reduce((sum, val) => sum + val, 0);
+        const bars = ['create', 'modify', 'delete'].map((type) => {
+          const value = bucket.counts[type] || 0;
+          const pct = model.maxTotal ? (value / model.maxTotal) * 100 : 0;
+          return `<div class="bar-segment" style="height:${pct}%; background:${actionColors[type]};" title="${bucket.label} · ${type}: ${value}"></div>`;
+        }).join('');
+
+        return `
+          <div class="chart-bar" aria-label="${bucket.label} changes">
+            <div class="bar-stack" data-total="${total}">${bars}</div>
+            <p class="chart-label">${bucket.label}</p>
+          </div>`;
+      }).join('');
     }
 
     function renderRiskChart(risk) {
@@ -319,10 +335,24 @@
               <div>
                 <p class="eyebrow">Changes over time (last 24h)</p>
                 <h2>Action mix</h2>
+                <p class="chart-subtitle">Share of create / modify / delete events in the last 24 hours</p>
               </div>
               <div class="legend">${renderLegend()}</div>
             </div>
-            <div class="pie-area">${renderActionPie(changesOverTime)}</div>
+            <div class="chart-split">
+              <div class="pie-area">
+                <p class="chart-subtitle">Overall distribution</p>
+                ${renderActionPie(changesOverTime)}
+              </div>
+              <div class="hourly-area">
+                <div class="chart-head-sub">
+                  <p class="eyebrow">Hourly breakdown</p>
+                  <h3>Changes by hour</h3>
+                  <p class="chart-subtitle">Stacked bars sized to the busiest hour</p>
+                </div>
+                <div class="chart-grid">${renderHourlyChart(changesOverTime)}</div>
+              </div>
+            </div>
           </section>
 
           <section class="risk-card">
