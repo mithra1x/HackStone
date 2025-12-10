@@ -8,8 +8,10 @@ const WATCH_DIR = path.join(ROOT, 'watched');
 const DATA_DIR = path.join(ROOT, 'data');
 const LOG_DIR = path.join(ROOT, 'logs');
 const PUBLIC_DIR = path.join(ROOT, 'public');
+const CONFIG_DIR = path.join(ROOT, 'config');
 const BASELINE_FILE = path.join(DATA_DIR, 'baseline.json');
 const LOG_FILE = path.join(LOG_DIR, 'fim.log');
+const METADATA_RULES_FILE = path.join(CONFIG_DIR, 'metadata-rules.json');
 
 const IGNORE_NAMES = new Set(['.DS_Store', 'baseline.json', 'fim.log']);
 const GOVERNANCE_KEYWORDS = /(personal|private|secret|pii)/i;
@@ -31,7 +33,7 @@ const AI_BASELINE = {
 };
 
 function ensureDirectories() {
-  [WATCH_DIR, DATA_DIR, LOG_DIR, PUBLIC_DIR].forEach((dir) => {
+  [WATCH_DIR, DATA_DIR, LOG_DIR, PUBLIC_DIR, CONFIG_DIR].forEach((dir) => {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
@@ -42,6 +44,62 @@ function ensureDirectories() {
   if (!fs.existsSync(LOG_FILE)) {
     fs.writeFileSync(LOG_FILE, '');
   }
+}
+
+let metadataRulesCache = null;
+
+async function loadMetadataRules() {
+  if (metadataRulesCache) return metadataRulesCache;
+  try {
+    const raw = await fs.promises.readFile(METADATA_RULES_FILE, 'utf-8');
+    metadataRulesCache = JSON.parse(raw || '[]');
+  } catch (err) {
+    metadataRulesCache = [];
+  }
+  return metadataRulesCache;
+}
+
+async function enrichEvent(event) {
+  const rules = await loadMetadataRules();
+  const severityRank = { low: 0, medium: 1, high: 2 };
+  const normalizedPath = (event.path || event.file || '').toLowerCase();
+  const ext = path.extname(normalizedPath);
+
+  const enriched = {
+    severity: 'low',
+    tags: [],
+    ...event
+  };
+
+  for (const rule of rules) {
+    const matchesExt = Array.isArray(rule.extensions)
+      ? rule.extensions.map((val) => val.toLowerCase()).includes(ext)
+      : false;
+    const matchesKeyword = Array.isArray(rule.keywords)
+      ? rule.keywords.some((kw) => normalizedPath.includes(kw.toLowerCase()))
+      : false;
+
+    if (!matchesExt && !matchesKeyword) continue;
+
+    const proposedSeverity = rule.severity?.toLowerCase();
+    if (proposedSeverity && severityRank[proposedSeverity] > severityRank[enriched.severity]) {
+      enriched.severity = proposedSeverity;
+    }
+
+    if (Array.isArray(rule.tags)) {
+      enriched.tags = Array.from(new Set([...(enriched.tags || []), ...rule.tags]));
+    }
+
+    if (rule.mitre) {
+      enriched.mitre = rule.mitre;
+    }
+  }
+
+  if (!Array.isArray(enriched.tags)) {
+    enriched.tags = [];
+  }
+
+  return enriched;
 }
 
 function isIgnored(filePath) {
@@ -186,15 +244,22 @@ async function handleChange(kind, filePath) {
 
   await fs.promises.writeFile(BASELINE_FILE, JSON.stringify(baseline, null, 2));
 
-  const evt = {
+  const baseEvent = {
     id: crypto.randomUUID(),
     type: kind,
+    path: rel,
     file: rel,
+    hash: after || before || null,
     timestamp,
     beforeHash: before,
     afterHash: after,
-    mitre,
-    severity: kind === 'delete' ? 'high' : kind === 'modify' ? 'medium' : 'info',
+    mitre
+  };
+
+  const enrichedEvent = await enrichEvent(baseEvent);
+
+  const evt = {
+    ...enrichedEvent,
     message: describeEvent(kind, rel, before, after),
     aiAssessment: buildAiAssessment(kind, rel, before, after)
   };
