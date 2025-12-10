@@ -35,11 +35,20 @@
       delete: 'rgba(239, 68, 68, 0.9)'
     };
 
+    const navItems = [
+      { id: 'overview', label: 'Overview', icon: '📊' },
+      { id: 'baseline', label: 'Baseline', icon: '📐' },
+      { id: 'charts', label: 'Charts', icon: '📈' },
+      { id: 'settings', label: 'Settings', icon: '⚙️' }
+    ];
+
     const state = {
       events: [],
       status: 'connecting',
       baselineSize: 0,
-      alert: ''
+      alert: '',
+      activeSection: 'overview',
+      sidebarOpen: false
     };
 
     const formatTime = (ts) => new Intl.DateTimeFormat('en', {
@@ -284,24 +293,11 @@
       }).join('');
     }
 
-    function render() {
-      const counters = countersFromEvents(state.events);
-      const changesOverTime = computeChangesOverTime(state.events);
-      const riskModel = computeRisk(state.events);
-      const latest = state.events[0];
-
-      const statusCopy = {
-        streaming: 'Live feed active',
-        ready: 'Loaded from API',
-        connecting: 'Connecting…',
-        disconnected: 'Stream disconnected',
-        error: 'API unreachable'
-      };
-
-      document.getElementById('root').innerHTML = `
-        <main class="page">
-          <section class="summary-grid">
-            <header class="hero">
+    function renderOverviewSection(counters, statusCopy, latest) {
+      return `
+        <div class="stack gap-4">
+          <div class="card-grid">
+            <header class="hero card">
               <div>
                 <p class="eyebrow">Real-time File Integrity Monitoring</p>
                 <h1>Trust, but verify every file change</h1>
@@ -317,9 +313,8 @@
               </div>
             </header>
 
-            <div class="summary-side">
+            <div class="card summary-side">
               ${state.alert ? `<div class="banner">${state.alert}</div>` : ''}
-
               <div class="toolbar">
                 <div>
                   <p class="toolbar-title">Secure baseline: ${state.baselineSize} files</p>
@@ -327,16 +322,71 @@
                 </div>
                 <button class="btn" id="rebuild-btn">Rebuild baseline</button>
               </div>
-
               <section class="grid stats-grid">
                 <div class="stat-card"><p class="stat-title">Creates</p><p class="stat-value">${counters.create}</p><p class="stat-hint">New files in scope</p></div>
                 <div class="stat-card"><p class="stat-title">Modifications</p><p class="stat-value">${counters.modify}</p><p class="stat-hint">Content tampering</p></div>
                 <div class="stat-card"><p class="stat-title">Deletes</p><p class="stat-value">${counters.delete}</p><p class="stat-hint">Potential destruction</p></div>
               </section>
             </div>
-          </section>
+          </div>
 
-          <section class="chart">
+          <div class="stack gap-4">
+            ${latest ? `
+              <section class="alert-card card">
+                <div class="alert-icon">${iconMap[latest.type] || '⚠️'}</div>
+                <div>
+                  <p class="alert-title">Most recent action</p>
+                  <p class="alert-body">${latest.message}</p>
+                  <p class="alert-meta">${formatTime(latest.timestamp)}</p>
+                </div>
+              </section>` : ''}
+
+            <section class="timeline card">
+              <div class="timeline-head">
+                <h2>Timeline of actions</h2>
+                <p class="timeline-sub">Showing up to 200 latest changes</p>
+              </div>
+              <div class="timeline-list">
+                ${state.events.map(renderEvent).join('') || '<p class="empty">No events yet. Touch a file in the watched folder.</p>'}
+              </div>
+            </section>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderBaselineSection(statusCopy) {
+      return `
+        <div class="card stack gap-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <p class="eyebrow">Secure baseline</p>
+              <h2 class="title-lg">Hash and governance snapshot</h2>
+              <p class="text-muted">${statusCopy[state.status] || 'Monitoring'} · ${state.baselineSize} tracked files</p>
+            </div>
+            <button class="btn" id="rebuild-btn">Rebuild baseline</button>
+          </div>
+          <div class="grid stats-grid">
+            <div class="stat-card"><p class="stat-title">Baseline size</p><p class="stat-value">${state.baselineSize}</p><p class="stat-hint">Files hashed and trusted</p></div>
+            <div class="stat-card"><p class="stat-title">Log integrity</p><p class="stat-value">Append-only</p><p class="stat-hint">JSONL audit trail</p></div>
+            <div class="stat-card"><p class="stat-title">Data handling</p><p class="stat-value">Governed</p><p class="stat-hint">PII filtered from scope</p></div>
+          </div>
+          <div class="howto">
+            <h3>Operational notes</h3>
+            <ul>
+              <li>Monitors the <code>watched/</code> directory. Update config in <code>server/index.js</code> if needed.</li>
+              <li>Baseline hashes are stored at <code>data/baseline.json</code>. Use the rebuild button after trusted maintenance.</li>
+              <li>Logs stream to <code>logs/fim.log</code> using JSON Lines to preserve integrity.</li>
+            </ul>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderChartsSection(changesOverTime, riskModel) {
+      return `
+        <div class="stack gap-4">
+          <section class="chart card">
             <div class="chart-head">
               <div>
                 <p class="eyebrow">Changes over time (last 24h)</p>
@@ -361,7 +411,7 @@
             </div>
           </section>
 
-          <section class="risk-card">
+          <section class="risk-card card">
             <div class="risk-head">
               <div>
                 <p class="eyebrow">AI risk assessment</p>
@@ -384,36 +434,103 @@
               </div>
             </div>
           </section>
+        </div>
+      `;
+    }
 
-          ${latest ? `
-            <section class="alert-card">
-              <div class="alert-icon">${iconMap[latest.type] || '⚠️'}</div>
+    function renderSettingsSection(statusCopy) {
+      return `
+        <div class="stack gap-4">
+          <div class="card">
+            <div class="flex items-center justify-between">
               <div>
-                <p class="alert-title">Most recent action</p>
-                <p class="alert-body">${latest.message}</p>
-                <p class="alert-meta">${formatTime(latest.timestamp)}</p>
+                <p class="eyebrow">Monitoring status</p>
+                <h2 class="title-lg">${statusCopy[state.status] || 'Monitoring'}</h2>
+                <p class="text-muted">Adjust operational controls and recovery actions.</p>
               </div>
-            </section>` : ''}
-
-          <section class="timeline">
-            <div class="timeline-head">
-              <h2>Timeline of actions</h2>
-              <p class="timeline-sub">Showing up to 200 latest changes</p>
+              <button class="btn" id="rebuild-btn">Rebuild baseline</button>
             </div>
-            <div class="timeline-list">
-              ${state.events.map(renderEvent).join('') || '<p class="empty">No events yet. Touch a file in the watched folder.</p>'}
-            </div>
-          </section>
+          </div>
+          <div class="grid stats-grid">
+            <div class="stat-card"><p class="stat-title">Notifications</p><p class="stat-value">On deck</p><p class="stat-hint">Add webhook targets</p></div>
+            <div class="stat-card"><p class="stat-title">Scope</p><p class="stat-value">watched/</p><p class="stat-hint">Single critical directory</p></div>
+            <div class="stat-card"><p class="stat-title">Retention</p><p class="stat-value">24h view</p><p class="stat-hint">Event window for charts</p></div>
+          </div>
+        </div>
+      `;
+    }
 
-          <section class="howto">
-            <h3>Operational notes</h3>
-            <ul>
-              <li>Monitors the <code>watched/</code> directory. Update config in <code>server/index.js</code> if needed.</li>
-              <li>Baseline hashes are stored at <code>data/baseline.json</code>. Use the rebuild button after trusted maintenance.</li>
-              <li>Logs stream to <code>logs/fim.log</code> using JSON Lines to preserve integrity.</li>
-            </ul>
-          </section>
-        </main>`;
+    function renderMain(activeSection, counters, statusCopy, changesOverTime, riskModel, latest) {
+      switch (activeSection) {
+        case 'baseline':
+          return renderBaselineSection(statusCopy);
+        case 'charts':
+          return renderChartsSection(changesOverTime, riskModel);
+        case 'settings':
+          return renderSettingsSection(statusCopy);
+        case 'overview':
+        default:
+          return renderOverviewSection(counters, statusCopy, latest);
+      }
+    }
+
+    function renderSidebar() {
+      return `
+        <aside class="sidebar ${state.sidebarOpen ? 'open' : ''}">
+          <div class="sidebar-header">
+            <div class="logo-mark">🛡️</div>
+            <div>
+              <p class="logo-title">HackStone</p>
+              <p class="logo-sub">FIM Dashboard</p>
+            </div>
+          </div>
+          <nav class="sidebar-nav">
+            ${navItems.map((item) => `
+              <button class="nav-item ${state.activeSection === item.id ? 'active' : ''}" data-section="${item.id}">
+                <span class="nav-icon">${item.icon}</span>
+                <span>${item.label}</span>
+              </button>
+            `).join('')}
+          </nav>
+        </aside>
+      `;
+    }
+
+    function render() {
+      const counters = countersFromEvents(state.events);
+      const changesOverTime = computeChangesOverTime(state.events);
+      const riskModel = computeRisk(state.events);
+      const latest = state.events[0];
+
+      const statusCopy = {
+        streaming: 'Live feed active',
+        ready: 'Loaded from API',
+        connecting: 'Connecting…',
+        disconnected: 'Stream disconnected',
+        error: 'API unreachable'
+      };
+
+      document.getElementById('root').innerHTML = `
+        <div class="app-shell">
+          ${renderSidebar()}
+          <div class="shell-main">
+            <header class="topbar">
+              <button class="hamburger" id="hamburger-btn" aria-label="Toggle navigation">
+                <span class="hamburger-line"></span>
+                <span class="hamburger-line"></span>
+                <span class="hamburger-line"></span>
+              </button>
+              <div>
+                <p class="eyebrow">Overview</p>
+                <h2 class="title-lg">${navItems.find((n) => n.id === state.activeSection)?.label || 'Overview'}</h2>
+              </div>
+            </header>
+            <main class="main-content">
+              ${renderMain(state.activeSection, counters, statusCopy, changesOverTime, riskModel, latest)}
+            </main>
+          </div>
+          <div class="sidebar-backdrop ${state.sidebarOpen ? 'visible' : ''}" id="sidebar-backdrop"></div>
+        </div>`;
 
       const rebuildBtn = document.getElementById('rebuild-btn');
       if (rebuildBtn) {
@@ -432,6 +549,32 @@
             state.alert = '';
             render();
           }, 2000);
+        });
+      }
+
+      const navButtons = document.querySelectorAll('.nav-item');
+      navButtons.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const target = btn.getAttribute('data-section');
+          state.activeSection = target;
+          if (window.innerWidth < 768) state.sidebarOpen = false;
+          render();
+        });
+      });
+
+      const hamburger = document.getElementById('hamburger-btn');
+      if (hamburger) {
+        hamburger.addEventListener('click', () => {
+          state.sidebarOpen = !state.sidebarOpen;
+          render();
+        });
+      }
+
+      const backdrop = document.getElementById('sidebar-backdrop');
+      if (backdrop) {
+        backdrop.addEventListener('click', () => {
+          state.sidebarOpen = false;
+          render();
         });
       }
     }
