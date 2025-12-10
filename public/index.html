@@ -36,9 +36,8 @@
     };
 
     const navItems = [
-      { id: 'summary', label: 'Summary', icon: '📊' },
+      { id: 'overview', label: 'Overview', icon: '📊' },
       { id: 'baseline', label: 'Baseline', icon: '📐' },
-      { id: 'activity', label: 'Activity', icon: '📜' },
       { id: 'charts', label: 'Charts', icon: '📈' },
       { id: 'settings', label: 'Settings', icon: '⚙️' }
     ];
@@ -48,7 +47,7 @@
       status: 'connecting',
       baselineSize: 0,
       alert: '',
-      activeSection: 'summary',
+      activeSection: 'overview',
       sidebarOpen: false
     };
 
@@ -294,38 +293,62 @@
       }).join('');
     }
 
-    function renderSummarySection(counters, statusCopy) {
+    function renderOverviewSection(counters, statusCopy, latest) {
       return `
-        <div class="card-grid">
-          <header class="hero card">
-            <div>
-              <p class="eyebrow">Real-time File Integrity Monitoring</p>
-              <h1>Trust, but verify every file change</h1>
-              <p class="lede">
-                Watches a single critical directory, hashes every file, and streams create / modify / delete
-                activity with context tied to MITRE ATT&CK-style tactics.
-              </p>
-              <div class="pill-row">
-                ${pill('Hashes are SHA-256', 'var(--slate)')}
-                ${pill('Governance filter skips personal data', 'var(--slate)')}
-                ${pill('Log integrity via append-only JSONL', 'var(--slate)')}
-              </div>
-            </div>
-          </header>
-
-          <div class="card summary-side">
-            ${state.alert ? `<div class="banner">${state.alert}</div>` : ''}
-            <div class="toolbar">
+        <div class="stack gap-4">
+          <div class="card-grid">
+            <header class="hero card">
               <div>
-                <p class="toolbar-title">Secure baseline: ${state.baselineSize} files</p>
-                <p class="toolbar-sub">${statusCopy[state.status] || 'Monitoring'}</p>
+                <p class="eyebrow">Real-time File Integrity Monitoring</p>
+                <h1>Trust, but verify every file change</h1>
+                <p class="lede">
+                  Watches a single critical directory, hashes every file, and streams create / modify / delete
+                  activity with context tied to MITRE ATT&CK-style tactics.
+                </p>
+                <div class="pill-row">
+                  ${pill('Hashes are SHA-256', 'var(--slate)')}
+                  ${pill('Governance filter skips personal data', 'var(--slate)')}
+                  ${pill('Log integrity via append-only JSONL', 'var(--slate)')}
+                </div>
               </div>
-              <button class="btn" id="rebuild-btn">Rebuild baseline</button>
+            </header>
+
+            <div class="card summary-side">
+              ${state.alert ? `<div class="banner">${state.alert}</div>` : ''}
+              <div class="toolbar">
+                <div>
+                  <p class="toolbar-title">Secure baseline: ${state.baselineSize} files</p>
+                  <p class="toolbar-sub">${statusCopy[state.status] || 'Monitoring'}</p>
+                </div>
+                <button class="btn" id="rebuild-btn">Rebuild baseline</button>
+              </div>
+              <section class="grid stats-grid">
+                <div class="stat-card"><p class="stat-title">Creates</p><p class="stat-value">${counters.create}</p><p class="stat-hint">New files in scope</p></div>
+                <div class="stat-card"><p class="stat-title">Modifications</p><p class="stat-value">${counters.modify}</p><p class="stat-hint">Content tampering</p></div>
+                <div class="stat-card"><p class="stat-title">Deletes</p><p class="stat-value">${counters.delete}</p><p class="stat-hint">Potential destruction</p></div>
+              </section>
             </div>
-            <section class="grid stats-grid">
-              <div class="stat-card"><p class="stat-title">Creates</p><p class="stat-value">${counters.create}</p><p class="stat-hint">New files in scope</p></div>
-              <div class="stat-card"><p class="stat-title">Modifications</p><p class="stat-value">${counters.modify}</p><p class="stat-hint">Content tampering</p></div>
-              <div class="stat-card"><p class="stat-title">Deletes</p><p class="stat-value">${counters.delete}</p><p class="stat-hint">Potential destruction</p></div>
+          </div>
+
+          <div class="stack gap-4">
+            ${latest ? `
+              <section class="alert-card card">
+                <div class="alert-icon">${iconMap[latest.type] || '⚠️'}</div>
+                <div>
+                  <p class="alert-title">Most recent action</p>
+                  <p class="alert-body">${latest.message}</p>
+                  <p class="alert-meta">${formatTime(latest.timestamp)}</p>
+                </div>
+              </section>` : ''}
+
+            <section class="timeline card">
+              <div class="timeline-head">
+                <h2>Timeline of actions</h2>
+                <p class="timeline-sub">Showing up to 200 latest changes</p>
+              </div>
+              <div class="timeline-list">
+                ${state.events.map(renderEvent).join('') || '<p class="empty">No events yet. Touch a file in the watched folder.</p>'}
+              </div>
             </section>
           </div>
         </div>
@@ -356,32 +379,6 @@
               <li>Logs stream to <code>logs/fim.log</code> using JSON Lines to preserve integrity.</li>
             </ul>
           </div>
-        </div>
-      `;
-    }
-
-    function renderActivitySection(latest) {
-      return `
-        <div class="stack gap-4">
-          ${latest ? `
-            <section class="alert-card card">
-              <div class="alert-icon">${iconMap[latest.type] || '⚠️'}</div>
-              <div>
-                <p class="alert-title">Most recent action</p>
-                <p class="alert-body">${latest.message}</p>
-                <p class="alert-meta">${formatTime(latest.timestamp)}</p>
-              </div>
-            </section>` : ''}
-
-          <section class="timeline card">
-            <div class="timeline-head">
-              <h2>Timeline of actions</h2>
-              <p class="timeline-sub">Showing up to 200 latest changes</p>
-            </div>
-            <div class="timeline-list">
-              ${state.events.map(renderEvent).join('') || '<p class="empty">No events yet. Touch a file in the watched folder.</p>'}
-            </div>
-          </section>
         </div>
       `;
     }
@@ -467,15 +464,13 @@
       switch (activeSection) {
         case 'baseline':
           return renderBaselineSection(statusCopy);
-        case 'activity':
-          return renderActivitySection(latest);
         case 'charts':
           return renderChartsSection(changesOverTime, riskModel);
         case 'settings':
           return renderSettingsSection(statusCopy);
-        case 'summary':
+        case 'overview':
         default:
-          return renderSummarySection(counters, statusCopy);
+          return renderOverviewSection(counters, statusCopy, latest);
       }
     }
 
@@ -527,7 +522,7 @@
               </button>
               <div>
                 <p class="eyebrow">Overview</p>
-                <h2 class="title-lg">${navItems.find((n) => n.id === state.activeSection)?.label || 'Summary'}</h2>
+                <h2 class="title-lg">${navItems.find((n) => n.id === state.activeSection)?.label || 'Overview'}</h2>
               </div>
             </header>
             <main class="main-content">
