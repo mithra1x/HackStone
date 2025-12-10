@@ -38,7 +38,6 @@
     const navItems = [
       { id: 'overview', label: 'Overview', icon: '📊' },
       { id: 'alertsConsole', label: 'Alerts Console', icon: '🚨' },
-      { id: 'baseline', label: 'Baseline', icon: '📐' },
       { id: 'charts', label: 'Charts', icon: '📈' },
       { id: 'settings', label: 'Settings', icon: '⚙️' }
     ];
@@ -410,21 +409,62 @@
         </div>`;
     }
 
-    function renderHourlyChart(model) {
-      return model.buckets.map((bucket) => {
-        const total = Object.values(bucket.counts).reduce((sum, val) => sum + val, 0);
-        const bars = ['create', 'modify', 'delete'].map((type) => {
-          const value = bucket.counts[type] || 0;
-          const pct = model.maxTotal ? (value / model.maxTotal) * 100 : 0;
-          return `<div class="bar-segment" style="height:${pct}%; background:${actionColors[type]};" title="${bucket.label} · ${type}: ${value}"></div>`;
-        }).join('');
+    function renderHourlyLineChart(model) {
+      const { buckets, maxTotal } = model;
+      const chartHeight = 240;
+      const padding = { top: 16, right: 24, bottom: 32, left: 46 };
+      const innerHeight = chartHeight - padding.top - padding.bottom;
+      const width = Math.max(560, buckets.length * 34);
+      const innerWidth = width - padding.left - padding.right;
+      const maxVal = Math.max(maxTotal, 1);
+      const step = buckets.length > 1 ? innerWidth / (buckets.length - 1) : innerWidth;
+      const series = ['create', 'modify', 'delete'];
 
-        return `
-          <div class="chart-bar" aria-label="${bucket.label} changes">
-            <div class="bar-stack" data-total="${total}">${bars}</div>
-            <p class="chart-label">${bucket.label}</p>
-          </div>`;
-      }).join('');
+      const yTicks = Array.from({ length: 5 }, (_, i) => Math.round((maxVal / 4) * i));
+      const yGrid = yTicks
+        .map((tick) => {
+          const y = padding.top + (1 - tick / maxVal) * innerHeight;
+          return `<g class="axis-tick" transform="translate(0, ${y})">
+              <line x1="${padding.left}" x2="${width - padding.right}" y1="0" y2="0" stroke="var(--border)" stroke-width="0.6" stroke-dasharray="4 4" />
+              <text x="${padding.left - 10}" y="4" text-anchor="end" class="axis-label">${tick}</text>
+            </g>`;
+        })
+        .join('');
+
+      const xLabels = buckets
+        .map((bucket, idx) => `<div class="chart-label">${idx % 2 === 0 ? bucket.label : ''}</div>`)
+        .join('');
+
+      const lines = series
+        .map((type) => {
+          const points = buckets.map((bucket, idx) => {
+            const val = bucket.counts[type] || 0;
+            const x = padding.left + idx * step;
+            const y = padding.top + (1 - val / maxVal) * innerHeight;
+            return { x, y, val, label: bucket.label };
+          });
+          if (!points.length) return '';
+          const line = buildSmoothPath(points);
+          const dots = points
+            .map((pt) => `<circle cx="${pt.x}" cy="${pt.y}" r="3.5" fill="${actionColors[type]}" opacity="0.9"><title>${pt.label} · ${type}: ${pt.val}</title></circle>`)
+            .join('');
+          return `
+            <g class="line-series">
+              <path d="${line}" fill="none" stroke="${actionColors[type]}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
+              ${dots}
+            </g>`;
+        })
+        .join('');
+
+      return `
+        <div class="line-chart" role="img" aria-label="Changes by hour line chart">
+          <svg viewBox="0 0 ${width} ${chartHeight}" preserveAspectRatio="xMidYMid meet">
+            <g>${yGrid}</g>
+            ${lines}
+          </svg>
+          <div class="chart-x-labels" style="grid-template-columns: repeat(${buckets.length}, 1fr);">${xLabels}</div>
+        </div>
+      `;
     }
 
     function renderRiskChart(risk) {
@@ -638,34 +678,6 @@
       `;
     }
 
-    function renderBaselineSection(statusCopy) {
-      return `
-        <div class="card stack gap-4">
-          <div class="flex items-center justify-between">
-            <div>
-              <p class="eyebrow">Secure baseline</p>
-              <h2 class="title-lg">Hash and governance snapshot</h2>
-              <p class="text-muted">${statusCopy[state.status] || 'Monitoring'} · ${state.baselineSize} tracked files</p>
-            </div>
-            <button class="btn" id="rebuild-btn">Rebuild baseline</button>
-          </div>
-          <div class="grid stats-grid">
-            <div class="stat-card"><p class="stat-title">Baseline size</p><p class="stat-value">${state.baselineSize}</p><p class="stat-hint">Files hashed and trusted</p></div>
-            <div class="stat-card"><p class="stat-title">Log integrity</p><p class="stat-value">Append-only</p><p class="stat-hint">JSONL audit trail</p></div>
-            <div class="stat-card"><p class="stat-title">Data handling</p><p class="stat-value">Governed</p><p class="stat-hint">PII filtered from scope</p></div>
-          </div>
-          <div class="howto">
-            <h3>Operational notes</h3>
-            <ul>
-              <li>Monitors the <code>watched/</code> directory. Update config in <code>server/index.js</code> if needed.</li>
-              <li>Baseline hashes are stored at <code>data/baseline.json</code>. Use the rebuild button after trusted maintenance.</li>
-              <li>Logs stream to <code>logs/fim.log</code> using JSON Lines to preserve integrity.</li>
-            </ul>
-          </div>
-        </div>
-      `;
-    }
-
     function renderChartsSection(changesOverTime, riskModel) {
       return `
         <div class="stack gap-4">
@@ -687,9 +699,9 @@
                 <div class="chart-head-sub">
                   <p class="eyebrow">Hourly breakdown</p>
                   <h3>Changes by hour</h3>
-                  <p class="chart-subtitle">Stacked bars sized to the busiest hour</p>
+                  <p class="chart-subtitle">Smoothed lines for create / modify / delete trends</p>
                 </div>
-                <div class="chart-grid">${renderHourlyChart(changesOverTime)}</div>
+                <div class="chart-line-wrap">${renderHourlyLineChart(changesOverTime)}</div>
               </div>
             </div>
           </section>
@@ -751,8 +763,6 @@
             filteredEvents || getFilteredEvents(),
             state.timeRange
           );
-        case 'baseline':
-          return renderBaselineSection(statusCopy);
         case 'charts':
           return renderChartsSection(changesOverTime, riskModel);
         case 'settings':
