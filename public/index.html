@@ -252,7 +252,10 @@
               <circle r="45" fill="var(--card)" stroke="var(--border)" stroke-width="1" />
               <text x="0" y="6" fill="var(--text)" font-size="16" font-weight="700" text-anchor="middle">${totalLabel}</text>
             </svg>
-            <p class="pie-caption">${totalCaption}</p>
+            <p class="pie-caption">
+              <span class="pie-caption-label">${totalCaption}</span>
+              <span class="pie-caption-count">${totalLabel}</span>
+            </p>
           </div>
           <div class="pie-legend">${legend}</div>
         </div>`;
