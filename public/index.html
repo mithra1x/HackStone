@@ -238,18 +238,22 @@
           <span class="legend-count">(${slice.value})</span>
         </div>`).join('');
 
-      const totalLabel = `${total} change${total === 1 ? '' : 's'} in 24h`;
+      const totalLabel = `${total}`;
+      const totalCaption = 'changes in 24h';
 
       return `
         <div class="pie-wrap">
-          <svg viewBox="-120 -120 240 240" role="img" aria-label="Action mix pie chart">
-            ${slices.map((slice) => `
-              <path d="${slice.path}" fill="${actionColors[slice.type]}" fill-opacity="0.88" stroke="rgba(0,0,0,0.25)" stroke-width="1" />
-              <text x="${slice.labelX.toFixed(1)}" y="${slice.labelY.toFixed(1)}" fill="var(--text)" font-size="10" text-anchor="middle">${Math.round(slice.pct)}%</text>
-            `).join('')}
-            <circle r="45" fill="var(--card)" stroke="var(--border)" stroke-width="1" />
-            <text x="0" y="6" fill="var(--text)" font-size="16" font-weight="700" text-anchor="middle">${totalLabel}</text>
-          </svg>
+          <div class="pie-figure">
+            <svg viewBox="-120 -120 240 240" role="img" aria-label="Action mix pie chart">
+              ${slices.map((slice) => `
+                <path d="${slice.path}" fill="${actionColors[slice.type]}" fill-opacity="0.88" stroke="rgba(0,0,0,0.25)" stroke-width="1" />
+                <text x="${slice.labelX.toFixed(1)}" y="${slice.labelY.toFixed(1)}" fill="var(--text)" font-size="10" text-anchor="middle">${Math.round(slice.pct)}%</text>
+              `).join('')}
+              <circle r="45" fill="var(--card)" stroke="var(--border)" stroke-width="1" />
+              <text x="0" y="6" fill="var(--text)" font-size="16" font-weight="700" text-anchor="middle">${totalLabel}</text>
+            </svg>
+            <p class="pie-caption">${totalCaption}</p>
+          </div>
           <div class="pie-legend">${legend}</div>
         </div>`;
     }

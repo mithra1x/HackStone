@@ -54,6 +54,8 @@ h1 { margin: 0 0 12px; font-size: 32px; }
 .pie-area { margin-top: 6px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
 .hourly-area { margin-top: 6px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
 .pie-wrap { display: grid; grid-template-columns: 320px 1fr; gap: 12px; align-items: center; }
+.pie-figure { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.pie-caption { margin: 0; color: var(--muted); font-size: 12px; text-align: center; }
 .pie-legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
 .legend-count { color: var(--muted); font-size: 12px; }
 .legend { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
