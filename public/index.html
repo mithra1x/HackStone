@@ -5,16 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Real-Time File Integrity Monitoring</title>
   <link rel="stylesheet" href="/styles.css" />
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-  <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
 </head>
 <body>
   <div id="root"></div>
 
-  <script type="text/babel">
-    const { useEffect, useMemo, useState } = React;
-
+  <script type="module">
     const iconMap = {
       create: '🟢',
       modify: '🟡',
@@ -40,100 +35,181 @@
       delete: 'rgba(239, 68, 68, 0.9)'
     };
 
+    const state = {
+      events: [],
+      status: 'connecting',
+      baselineSize: 0,
+      alert: ''
+    };
+
     const formatTime = (ts) => new Intl.DateTimeFormat('en', {
       dateStyle: 'medium',
       timeStyle: 'medium'
     }).format(new Date(ts));
 
-    function useFimEvents() {
-      const [events, setEvents] = useState([]);
-      const [status, setStatus] = useState('connecting');
-      const [baselineSize, setBaselineSize] = useState(0);
+    const countersFromEvents = (events) => events.reduce(
+      (acc, evt) => {
+        if (evt.type === 'create' || evt.type === 'modify' || evt.type === 'delete') {
+          acc[evt.type] = (acc[evt.type] || 0) + 1;
+        }
+        return acc;
+      },
+      { create: 0, modify: 0, delete: 0 }
+    );
 
-      useEffect(() => {
-        fetch('/api/events')
-          .then((res) => res.json())
-          .then((data) => {
-            setEvents(data.events || []);
-            setBaselineSize(data.baselineSize || 0);
-            setStatus('ready');
-          })
-          .catch(() => setStatus('error'));
-
-        const source = new EventSource('/stream');
-        source.onopen = () => setStatus('streaming');
-        source.onerror = () => setStatus('disconnected');
-        source.onmessage = (evt) => {
-          const payload = JSON.parse(evt.data);
-          if (!payload.type || payload.type === 'connected') return;
-          setEvents((prev) => [payload, ...prev].slice(0, 200));
+    function computeChangesOverTime(events) {
+      const windowMs = 24 * 60 * 60 * 1000;
+      const hourMs = 60 * 60 * 1000;
+      const now = Date.now();
+      const windowStart = now - windowMs;
+      const buckets = Array.from({ length: 24 }, (_, idx) => {
+        const bucketStart = windowStart + idx * hourMs;
+        return {
+          label: new Intl.DateTimeFormat('en', { hour: '2-digit', hour12: false }).format(new Date(bucketStart)),
+          counts: { create: 0, modify: 0, delete: 0 }
         };
-        return () => source.close();
-      }, []);
+      });
 
-      const counters = useMemo(() => {
-        return events.reduce(
-          (acc, evt) => {
-            acc[evt.type] = (acc[evt.type] || 0) + 1;
-            return acc;
-          },
-          { create: 0, modify: 0, delete: 0 }
-        );
-      }, [events]);
+      events.forEach((evt) => {
+        if (!evt.timestamp) return;
+        const ts = new Date(evt.timestamp).getTime();
+        if (Number.isNaN(ts) || ts < windowStart || ts > now) return;
+        const idx = Math.min(Math.floor((ts - windowStart) / hourMs), buckets.length - 1);
+        if (evt.type === 'create' || evt.type === 'modify' || evt.type === 'delete') {
+          buckets[idx].counts[evt.type] += 1;
+        }
+      });
 
-      return { events, status, counters, baselineSize, setEvents, setBaselineSize };
-    }
-
-    function Pill({ label, color }) {
-      return <span className="pill" style={{ backgroundColor: color }}>{label}</span>;
-    }
-
-    function StatCard({ title, value, hint }) {
-      return (
-        <div className="stat-card">
-          <p className="stat-title">{title}</p>
-          <p className="stat-value">{value}</p>
-          {hint && <p className="stat-hint">{hint}</p>}
-        </div>
+      const maxTotal = Math.max(
+        ...buckets.map((b) => Object.values(b.counts).reduce((sum, val) => sum + val, 0)),
+        1
       );
+
+      return { buckets, maxTotal };
     }
 
-    function EventRow({ evt }) {
+    function computeRisk(events) {
+      const windowMs = 24 * 60 * 60 * 1000;
+      const hourMs = 60 * 60 * 1000;
+      const now = Date.now();
+      const windowStart = now - windowMs;
+      const buckets = Array.from({ length: 24 }, (_, idx) => {
+        const bucketStart = windowStart + idx * hourMs;
+        return {
+          label: new Intl.DateTimeFormat('en', { hour: '2-digit', hour12: false }).format(new Date(bucketStart)),
+          score: 0,
+          actions: 0
+        };
+      });
+
+      events.forEach((evt) => {
+        if (!evt.timestamp || !evt.type) return;
+        const ts = new Date(evt.timestamp).getTime();
+        if (Number.isNaN(ts) || ts < windowStart || ts > now) return;
+        const idx = Math.min(Math.floor((ts - windowStart) / hourMs), buckets.length - 1);
+        const weight = severityWeight[evt.severity] || 1;
+        const decay = Math.max(0.35, 1 - (now - ts) / windowMs);
+        buckets[idx].score += weight * decay;
+        buckets[idx].actions += 1;
+      });
+
+      const maxScore = Math.max(...buckets.map((b) => b.score), 1);
+      const currentScore = buckets[buckets.length - 1]?.score || 0;
+      const normalized = Math.min(Math.round((currentScore / maxScore) * 100), 100);
+      let label = 'Low';
+      let copy = 'Changes look routine with no concentrated destructive activity.';
+      if (normalized >= 70) {
+        label = 'Critical';
+        copy = 'High-risk activity concentrated recently. Validate deletes and rebuild only if trusted.';
+      } else if (normalized >= 40) {
+        label = 'Elevated';
+        copy = 'Steady medium/high severity actions. Review audit trail and confirm operators.';
+      }
+
+      return {
+        buckets,
+        maxScore,
+        normalized,
+        label,
+        copy,
+        currentScore
+      };
+    }
+
+    function pill(label, color) {
+      return `<span class="pill" style="background-color:${color}">${label}</span>`;
+    }
+
+    function renderEvent(evt) {
       const icon = iconMap[evt.type] || 'ℹ️';
-      return (
-        <div className="event-row">
-          <div className="event-icon">{icon}</div>
-          <div className="event-body">
-            <div className="event-header">
+      const mitre = evt.mitre ? pill(`${evt.mitre.id} · ${evt.mitre.name}`, 'var(--slate)') : '';
+      const severity = evt.severity ? pill(evt.severity.toUpperCase(), severityHue[evt.severity] || 'var(--slate)') : '';
+      const beforeHash = evt.beforeHash ? `<span class="hash">Prev: ${evt.beforeHash.slice(0, 10)}…</span>` : '';
+      const afterHash = evt.afterHash ? `<span class="hash">New: ${evt.afterHash.slice(0, 10)}…</span>` : '';
+
+      return `
+        <div class="event-row">
+          <div class="event-icon">${icon}</div>
+          <div class="event-body">
+            <div class="event-header">
               <div>
-                <p className="event-title">{evt.message}</p>
-                <p className="event-path">{evt.file || 'Baseline update'}</p>
+                <p class="event-title">${evt.message}</p>
+                <p class="event-path">${evt.file || 'Baseline update'}</p>
               </div>
-              {evt.mitre && (
-                <Pill
-                  label={`${evt.mitre.id} · ${evt.mitre.name}`}
-                  color="var(--slate)"
-                />
-              )}
+              ${mitre}
             </div>
-            <div className="event-meta">
-              <span className="timestamp">{formatTime(evt.timestamp)}</span>
-              {evt.beforeHash && (
-                <span className="hash">Prev: {evt.beforeHash.slice(0, 10)}…</span>
-              )}
-              {evt.afterHash && (
-                <span className="hash">New: {evt.afterHash.slice(0, 10)}…</span>
-              )}
-              {evt.severity && (
-                <Pill label={evt.severity.toUpperCase()} color={severityHue[evt.severity]} />
-              )}
+            <div class="event-meta">
+              <span class="timestamp">${formatTime(evt.timestamp)}</span>
+              ${beforeHash}
+              ${afterHash}
+              ${severity}
             </div>
           </div>
-        </div>
-      );
+        </div>`;
     }
 
-    function Toolbar({ baselineSize, onRebuild, status }) {
+    function renderLegend() {
+      return Object.entries(actionColors).map(([type, color]) => `
+        <div class="legend-item" key="${type}">
+          <span class="legend-swatch" style="background-color:${color}"></span>
+          <span class="legend-label">${type}</span>
+        </div>
+      `).join('');
+    }
+
+    function renderChangesChart(model) {
+      return model.buckets.map((bucket, idx) => {
+        const total = Object.values(bucket.counts).reduce((sum, v) => sum + v, 0);
+        const segments = ['create', 'modify', 'delete'].map((type) => {
+          const value = bucket.counts[type];
+          const height = (value / model.maxTotal) * 100;
+          return `<div class="bar-segment" style="height:${height}%;background-color:${actionColors[type]};opacity:${value ? 1 : 0.3}" title="${bucket.label}: ${type} ${value}"></div>`;
+        }).join('');
+        return `
+          <div class="chart-bar" key="${bucket.label}-${idx}">
+            <div class="bar-stack" aria-label="Hour ${bucket.label}: ${total} changes">${segments}</div>
+            <p class="chart-label">${bucket.label}</p>
+          </div>`;
+      }).join('');
+    }
+
+    function renderRiskChart(risk) {
+      return risk.buckets.map((bucket, idx) => {
+        const height = (bucket.score / risk.maxScore) * 100;
+        return `
+          <div class="risk-bar" title="Hour ${bucket.label}: risk score ${bucket.score.toFixed(1)}">
+            <div class="risk-bar-fill" style="height:${height}%"></div>
+            <p class="chart-label">${bucket.label}</p>
+          </div>`;
+      }).join('');
+    }
+
+    function render() {
+      const counters = countersFromEvents(state.events);
+      const changesOverTime = computeChangesOverTime(state.events);
+      const riskModel = computeRisk(state.events);
+      const latest = state.events[0];
+
       const statusCopy = {
         streaming: 'Live feed active',
         ready: 'Loaded from API',
@@ -141,258 +217,97 @@
         disconnected: 'Stream disconnected',
         error: 'API unreachable'
       };
-      return (
-        <div className="toolbar">
-          <div>
-            <p className="toolbar-title">Secure baseline: {baselineSize} files</p>
-            <p className="toolbar-sub">{statusCopy[status] || 'Monitoring'}</p>
-          </div>
-          <button className="btn" onClick={onRebuild}>Rebuild baseline</button>
-        </div>
-      );
-    }
 
-    function App() {
-      const { events, status, counters, baselineSize, setBaselineSize } = useFimEvents();
-      const [alert, setAlert] = useState('');
-
-      const changesOverTime = useMemo(() => {
-        const windowMs = 24 * 60 * 60 * 1000;
-        const hourMs = 60 * 60 * 1000;
-        const now = Date.now();
-        const windowStart = now - windowMs;
-        const buckets = Array.from({ length: 24 }, (_, idx) => {
-          const bucketStart = windowStart + idx * hourMs;
-          return {
-            label: new Intl.DateTimeFormat('en', { hour: '2-digit', hour12: false }).format(
-              new Date(bucketStart)
-            ),
-            counts: { create: 0, modify: 0, delete: 0 }
-          };
-        });
-
-        events.forEach((evt) => {
-          if (!evt.timestamp) return;
-          const ts = new Date(evt.timestamp).getTime();
-          if (Number.isNaN(ts) || ts < windowStart || ts > now) return;
-          const idx = Math.min(Math.floor((ts - windowStart) / hourMs), buckets.length - 1);
-          if (!buckets[idx]) return;
-          if (evt.type === 'create' || evt.type === 'modify' || evt.type === 'delete') {
-            buckets[idx].counts[evt.type] += 1;
-          }
-        });
-
-        const maxTotal = Math.max(
-          ...buckets.map((b) => Object.values(b.counts).reduce((sum, val) => sum + val, 0)),
-          1
-        );
-
-        return { buckets, maxTotal };
-      }, [events]);
-
-      const rebuildBaseline = async () => {
-        setAlert('Rebuilding baseline…');
-        try {
-          const res = await fetch('/api/rebuild', { method: 'POST' });
-          const data = await res.json();
-          setBaselineSize(data.baselineSize || 0);
-          setAlert('Baseline rebuilt');
-          setTimeout(() => setAlert(''), 2000);
-        } catch (err) {
-          setAlert('Failed to rebuild baseline');
-        }
-      };
-
-      const riskModel = useMemo(() => {
-        const windowMs = 24 * 60 * 60 * 1000;
-        const hourMs = 60 * 60 * 1000;
-        const now = Date.now();
-        const windowStart = now - windowMs;
-        const buckets = Array.from({ length: 24 }, (_, idx) => {
-          const bucketStart = windowStart + idx * hourMs;
-          return {
-            label: new Intl.DateTimeFormat('en', { hour: '2-digit', hour12: false }).format(
-              new Date(bucketStart)
-            ),
-            score: 0,
-            actions: 0
-          };
-        });
-
-        events.forEach((evt) => {
-          if (!evt.timestamp || !evt.type) return;
-          const ts = new Date(evt.timestamp).getTime();
-          if (Number.isNaN(ts) || ts < windowStart || ts > now) return;
-          const idx = Math.min(Math.floor((ts - windowStart) / hourMs), buckets.length - 1);
-          if (!buckets[idx]) return;
-          const weight = severityWeight[evt.severity] || 1;
-          const decay = Math.max(0.35, 1 - (now - ts) / windowMs);
-          buckets[idx].score += weight * decay;
-          buckets[idx].actions += 1;
-        });
-
-        const maxScore = Math.max(...buckets.map((b) => b.score), 1);
-        const currentScore = buckets[buckets.length - 1]?.score || 0;
-        const normalized = Math.min(Math.round((currentScore / maxScore) * 100), 100);
-        let label = 'Low';
-        let copy = 'Changes look routine with no concentrated destructive activity.';
-        if (normalized >= 70) {
-          label = 'Critical';
-          copy = 'High-risk activity concentrated recently. Validate deletes and rebuild only if trusted.';
-        } else if (normalized >= 40) {
-          label = 'Elevated';
-          copy = 'Steady medium/high severity actions. Review audit trail and confirm operators.';
-        }
-
-        return {
-          buckets,
-          maxScore,
-          normalized,
-          label,
-          copy,
-          currentScore
-        };
-      }, [events]);
-
-      const latest = events[0];
-
-      return (
-        <main className="page">
-          <header className="hero">
+      document.getElementById('root').innerHTML = `
+        <main class="page">
+          <header class="hero">
             <div>
-              <p className="eyebrow">Real-time File Integrity Monitoring</p>
+              <p class="eyebrow">Real-time File Integrity Monitoring</p>
               <h1>Trust, but verify every file change</h1>
-              <p className="lede">
+              <p class="lede">
                 Watches a single critical directory, hashes every file, and streams create / modify / delete
                 activity with context tied to MITRE ATT&CK-style tactics.
               </p>
-              <div className="pill-row">
-                <Pill label="Hashes are SHA-256" color="var(--slate)" />
-                <Pill label="Governance filter skips personal data" color="var(--slate)" />
-                <Pill label="Log integrity via append-only JSONL" color="var(--slate)" />
+              <div class="pill-row">
+                ${pill('Hashes are SHA-256', 'var(--slate)')}
+                ${pill('Governance filter skips personal data', 'var(--slate)')}
+                ${pill('Log integrity via append-only JSONL', 'var(--slate)')}
               </div>
             </div>
           </header>
 
-          {alert && <div className="banner">{alert}</div>}
+          ${state.alert ? `<div class="banner">${state.alert}</div>` : ''}
 
-          <Toolbar baselineSize={baselineSize} onRebuild={rebuildBaseline} status={status} />
+          <div class="toolbar">
+            <div>
+              <p class="toolbar-title">Secure baseline: ${state.baselineSize} files</p>
+              <p class="toolbar-sub">${statusCopy[state.status] || 'Monitoring'}</p>
+            </div>
+            <button class="btn" id="rebuild-btn">Rebuild baseline</button>
+          </div>
 
-          <section className="grid">
-            <StatCard title="Creates" value={counters.create} hint="New files in scope" />
-            <StatCard title="Modifications" value={counters.modify} hint="Content tampering" />
-            <StatCard title="Deletes" value={counters.delete} hint="Potential destruction" />
+          <section class="grid">
+            <div class="stat-card"><p class="stat-title">Creates</p><p class="stat-value">${counters.create}</p><p class="stat-hint">New files in scope</p></div>
+            <div class="stat-card"><p class="stat-title">Modifications</p><p class="stat-value">${counters.modify}</p><p class="stat-hint">Content tampering</p></div>
+            <div class="stat-card"><p class="stat-title">Deletes</p><p class="stat-value">${counters.delete}</p><p class="stat-hint">Potential destruction</p></div>
           </section>
 
-          <section className="chart">
-            <div className="chart-head">
+          <section class="chart">
+            <div class="chart-head">
               <div>
-                <p className="eyebrow">Changes over time (last 24h)</p>
+                <p class="eyebrow">Changes over time (last 24h)</p>
                 <h2>Action mix by hour</h2>
               </div>
-              <div className="legend">
-                {Object.entries(actionColors).map(([type, color]) => (
-                  <div className="legend-item" key={type}>
-                    <span className="legend-swatch" style={{ backgroundColor: color }} />
-                    <span className="legend-label">{type}</span>
-                  </div>
-                ))}
-              </div>
+              <div class="legend">${renderLegend()}</div>
             </div>
-            <div className="chart-grid">
-              {changesOverTime.buckets.map((bucket, idx) => {
-                const total = Object.values(bucket.counts).reduce((sum, v) => sum + v, 0);
-                return (
-                  <div className="chart-bar" key={`${bucket.label}-${idx}`}>
-                    <div className="bar-stack" aria-label={`Hour ${bucket.label}: ${total} changes`}>
-                      {['create', 'modify', 'delete'].map((type) => {
-                        const value = bucket.counts[type];
-                        const height = (value / changesOverTime.maxTotal) * 100;
-                        return (
-                          <div
-                            key={type}
-                            className="bar-segment"
-                            style={{
-                              height: `${height}%`,
-                              backgroundColor: actionColors[type],
-                              opacity: value ? 1 : 0.3
-                            }}
-                            title={`${bucket.label}: ${type} ${value}`}
-                          />
-                        );
-                      })}
-                    </div>
-                    <p className="chart-label">{bucket.label}</p>
-                  </div>
-                );
-              })}
-            </div>
+            <div class="chart-grid">${renderChangesChart(changesOverTime)}</div>
           </section>
 
-          <section className="risk-card">
-            <div className="risk-head">
+          <section class="risk-card">
+            <div class="risk-head">
               <div>
-                <p className="eyebrow">AI risk assessment</p>
+                <p class="eyebrow">AI risk assessment</p>
                 <h2>Behavioral risk outlook</h2>
-                <p className="risk-sub">Weighted severity with recency decay across the last 24h.</p>
+                <p class="risk-sub">Weighted severity with recency decay across the last 24h.</p>
               </div>
-              <div className={`risk-chip risk-${riskModel.label.toLowerCase()}`}>
-                <span className="risk-chip-score">{riskModel.normalized}</span>
-                <span className="risk-chip-text">{riskModel.label}</span>
+              <div class="risk-chip risk-${riskModel.label.toLowerCase()}">
+                <span class="risk-chip-score">${riskModel.normalized}</span>
+                <span class="risk-chip-text">${riskModel.label}</span>
               </div>
             </div>
-            <div className="risk-body">
-              <div className="risk-summary">
-                <p className="risk-score">{riskModel.normalized}</p>
-                <p className="risk-label">{riskModel.label} risk</p>
-                <p className="risk-copy">{riskModel.copy}</p>
+            <div class="risk-body">
+              <div class="risk-summary">
+                <p class="risk-score">${riskModel.normalized}</p>
+                <p class="risk-label">${riskModel.label} risk</p>
+                <p class="risk-copy">${riskModel.copy}</p>
               </div>
-              <div className="risk-chart" role="img" aria-label="Risk score trend over last 24 hours">
-                {riskModel.buckets.map((bucket, idx) => {
-                  const height = (bucket.score / riskModel.maxScore) * 100;
-                  return (
-                    <div
-                      key={`${bucket.label}-${idx}`}
-                      className="risk-bar"
-                      title={`Hour ${bucket.label}: risk score ${bucket.score.toFixed(1)}`}
-                    >
-                      <div
-                        className="risk-bar-fill"
-                        style={{ height: `${height}%` }}
-                      />
-                      <p className="chart-label">{bucket.label}</p>
-                    </div>
-                  );
-                })}
+              <div class="risk-chart" role="img" aria-label="Risk score trend over last 24 hours">
+                ${renderRiskChart(riskModel)}
               </div>
             </div>
           </section>
 
-          {latest && (
-            <section className="alert-card">
-              <div className="alert-icon">{iconMap[latest.type] || '⚠️'}</div>
+          ${latest ? `
+            <section class="alert-card">
+              <div class="alert-icon">${iconMap[latest.type] || '⚠️'}</div>
               <div>
-                <p className="alert-title">Most recent action</p>
-                <p className="alert-body">{latest.message}</p>
-                <p className="alert-meta">{formatTime(latest.timestamp)}</p>
+                <p class="alert-title">Most recent action</p>
+                <p class="alert-body">${latest.message}</p>
+                <p class="alert-meta">${formatTime(latest.timestamp)}</p>
               </div>
-            </section>
-          )}
+            </section>` : ''}
 
-          <section className="timeline">
-            <div className="timeline-head">
+          <section class="timeline">
+            <div class="timeline-head">
               <h2>Timeline of actions</h2>
-              <p className="timeline-sub">Showing up to 200 latest changes</p>
+              <p class="timeline-sub">Showing up to 200 latest changes</p>
             </div>
-            <div className="timeline-list">
-              {events.map((evt) => (
-                <EventRow evt={evt} key={evt.id} />
-              ))}
-              {!events.length && <p className="empty">No events yet. Touch a file in the watched folder.</p>}
+            <div class="timeline-list">
+              ${state.events.map(renderEvent).join('') || '<p class="empty">No events yet. Touch a file in the watched folder.</p>'}
             </div>
           </section>
 
-          <section className="howto">
+          <section class="howto">
             <h3>Operational notes</h3>
             <ul>
               <li>Monitors the <code>watched/</code> directory. Update config in <code>server/index.js</code> if needed.</li>
@@ -400,11 +315,56 @@
               <li>Logs stream to <code>logs/fim.log</code> using JSON Lines to preserve integrity.</li>
             </ul>
           </section>
-        </main>
-      );
+        </main>`;
+
+      const rebuildBtn = document.getElementById('rebuild-btn');
+      if (rebuildBtn) {
+        rebuildBtn.addEventListener('click', async () => {
+          state.alert = 'Rebuilding baseline…';
+          render();
+          try {
+            const res = await fetch('/api/rebuild', { method: 'POST' });
+            const data = await res.json();
+            state.baselineSize = data.baselineSize || 0;
+            state.alert = 'Baseline rebuilt';
+          } catch (err) {
+            state.alert = 'Failed to rebuild baseline';
+          }
+          setTimeout(() => {
+            state.alert = '';
+            render();
+          }, 2000);
+        });
+      }
     }
 
-    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    async function loadInitial() {
+      try {
+        const res = await fetch('/api/events');
+        const data = await res.json();
+        state.events = data.events || [];
+        state.baselineSize = data.baselineSize || 0;
+        state.status = 'ready';
+      } catch (err) {
+        state.status = 'error';
+      }
+      render();
+    }
+
+    function startStream() {
+      const source = new EventSource('/stream');
+      source.onopen = () => { state.status = 'streaming'; render(); };
+      source.onerror = () => { state.status = 'disconnected'; render(); };
+      source.onmessage = (evt) => {
+        const payload = JSON.parse(evt.data);
+        if (!payload.type || payload.type === 'connected') return;
+        state.events.unshift(payload);
+        state.events = state.events.slice(0, 200);
+        render();
+      };
+    }
+
+    loadInitial().then(startStream);
   </script>
 </body>
 </html>
