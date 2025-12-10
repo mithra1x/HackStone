@@ -300,36 +300,40 @@
 
       document.getElementById('root').innerHTML = `
         <main class="page">
-          <header class="hero">
-            <div>
-              <p class="eyebrow">Real-time File Integrity Monitoring</p>
-              <h1>Trust, but verify every file change</h1>
-              <p class="lede">
-                Watches a single critical directory, hashes every file, and streams create / modify / delete
-                activity with context tied to MITRE ATT&CK-style tactics.
-              </p>
-              <div class="pill-row">
-                ${pill('Hashes are SHA-256', 'var(--slate)')}
-                ${pill('Governance filter skips personal data', 'var(--slate)')}
-                ${pill('Log integrity via append-only JSONL', 'var(--slate)')}
+          <section class="summary-grid">
+            <header class="hero">
+              <div>
+                <p class="eyebrow">Real-time File Integrity Monitoring</p>
+                <h1>Trust, but verify every file change</h1>
+                <p class="lede">
+                  Watches a single critical directory, hashes every file, and streams create / modify / delete
+                  activity with context tied to MITRE ATT&CK-style tactics.
+                </p>
+                <div class="pill-row">
+                  ${pill('Hashes are SHA-256', 'var(--slate)')}
+                  ${pill('Governance filter skips personal data', 'var(--slate)')}
+                  ${pill('Log integrity via append-only JSONL', 'var(--slate)')}
+                </div>
               </div>
+            </header>
+
+            <div class="summary-side">
+              ${state.alert ? `<div class="banner">${state.alert}</div>` : ''}
+
+              <div class="toolbar">
+                <div>
+                  <p class="toolbar-title">Secure baseline: ${state.baselineSize} files</p>
+                  <p class="toolbar-sub">${statusCopy[state.status] || 'Monitoring'}</p>
+                </div>
+                <button class="btn" id="rebuild-btn">Rebuild baseline</button>
+              </div>
+
+              <section class="grid stats-grid">
+                <div class="stat-card"><p class="stat-title">Creates</p><p class="stat-value">${counters.create}</p><p class="stat-hint">New files in scope</p></div>
+                <div class="stat-card"><p class="stat-title">Modifications</p><p class="stat-value">${counters.modify}</p><p class="stat-hint">Content tampering</p></div>
+                <div class="stat-card"><p class="stat-title">Deletes</p><p class="stat-value">${counters.delete}</p><p class="stat-hint">Potential destruction</p></div>
+              </section>
             </div>
-          </header>
-
-          ${state.alert ? `<div class="banner">${state.alert}</div>` : ''}
-
-          <div class="toolbar">
-            <div>
-              <p class="toolbar-title">Secure baseline: ${state.baselineSize} files</p>
-              <p class="toolbar-sub">${statusCopy[state.status] || 'Monitoring'}</p>
-            </div>
-            <button class="btn" id="rebuild-btn">Rebuild baseline</button>
-          </div>
-
-          <section class="grid">
-            <div class="stat-card"><p class="stat-title">Creates</p><p class="stat-value">${counters.create}</p><p class="stat-hint">New files in scope</p></div>
-            <div class="stat-card"><p class="stat-title">Modifications</p><p class="stat-value">${counters.modify}</p><p class="stat-hint">Content tampering</p></div>
-            <div class="stat-card"><p class="stat-title">Deletes</p><p class="stat-value">${counters.delete}</p><p class="stat-hint">Potential destruction</p></div>
           </section>
 
           <section class="chart">
