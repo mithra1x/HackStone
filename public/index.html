@@ -18,14 +18,18 @@
     };
 
     const severityHue = {
-      high: 'var(--red)',
+      critical: 'var(--red)',
+      high: 'var(--orange)',
       medium: 'var(--amber)',
+      low: 'var(--green)',
       info: 'var(--green)'
     };
 
     const severityWeight = {
+      critical: 8,
       high: 6,
       medium: 3,
+      low: 1,
       info: 1
     };
 
@@ -39,7 +43,9 @@
       events: [],
       status: 'connecting',
       baselineSize: 0,
-      alert: ''
+      alert: '',
+      severityFilter: 'all',
+      searchTerm: ''
     };
 
     const formatTime = (ts) => new Intl.DateTimeFormat('en', {
@@ -138,14 +144,57 @@
       };
     }
 
+    function filterEvents(events) {
+      const search = (state.searchTerm || '').toLowerCase().trim();
+      const severity = state.severityFilter;
+
+      return (events || []).filter((evt) => {
+        const severityMatches = severity === 'all' || (evt.severity || 'low').toLowerCase() === severity;
+        if (!severityMatches) return false;
+        if (!search) return true;
+
+        const haystack = [
+          evt.message,
+          evt.file,
+          evt.data_classification,
+          evt.recommended_action,
+          Array.isArray(evt.tags) ? evt.tags.join(' ') : '',
+          Array.isArray(evt.mitre) ? evt.mitre.map((m) => `${m.tactic} ${m.technique_id} ${m.technique}`).join(' ') : ''
+        ].join(' ').toLowerCase();
+
+        return haystack.includes(search);
+      });
+    }
+
     function pill(label, color) {
       return `<span class="pill" style="background-color:${color}">${label}</span>`;
     }
 
     function renderEvent(evt) {
       const icon = iconMap[evt.type] || 'ℹ️';
-      const mitre = evt.mitre ? pill(`${evt.mitre.id} · ${evt.mitre.name}`, 'var(--slate)') : '';
+      const mitre = Array.isArray(evt.mitre)
+        ? evt.mitre.map((m) => pill(`${m.technique_id} · ${m.tactic}`, 'var(--slate)')).join('')
+        : evt.mitre
+          ? pill(`${evt.mitre.technique_id || evt.mitre.id} · ${evt.mitre.tactic || evt.mitre.name}`, 'var(--slate)')
+          : '';
       const severity = evt.severity ? pill(evt.severity.toUpperCase(), severityHue[evt.severity] || 'var(--slate)') : '';
+      const classification = evt.data_classification
+        ? pill(`Data: ${evt.data_classification}`, 'var(--slate)')
+        : '';
+      const env = evt.environment?.name ? pill(`Env: ${evt.environment.name}`, 'var(--slate)') : '';
+      const tags = Array.isArray(evt.tags) && evt.tags.length
+        ? evt.tags.map((t) => pill(`#${t}`, 'var(--slate)')).join('')
+        : '';
+      const ruleIds = Array.isArray(evt.rule_ids) && evt.rule_ids.length
+        ? `<p class="event-tags">Rules: ${evt.rule_ids.join(', ')}</p>`
+        : '';
+      const riskScore = Number.isFinite(evt.risk_score) ? `<span class="risk">Risk: ${evt.risk_score}</span>` : '';
+      const recommended = evt.recommended_action
+        ? `<p class="recommended">Recommended: ${evt.recommended_action}</p>`
+        : '';
+      const alertPolicy = evt.alert_policy?.notify_channels
+        ? `<p class="recommended">Alert: ${evt.alert_policy.notify_channels.join(', ')}</p>`
+        : '';
       const ai = evt.aiAssessment || fallbackAiAssessment(evt);
 
       return `
@@ -157,15 +206,20 @@
                 <p class="event-title">${evt.message}</p>
                 <p class="event-path">${evt.file || 'Baseline update'}</p>
               </div>
-              ${mitre}
+              <div class="event-flags">${mitre}${classification}${env}</div>
             </div>
             <div class="event-meta">
               <span class="timestamp">${formatTime(evt.timestamp)}</span>
               ${severity}
+              ${riskScore}
               <span class="ai-chip ai-${ai.label.toLowerCase()}">AI: ${ai.label} · ${ai.score}</span>
             </div>
+            ${tags ? `<div class="event-tags">${tags}</div>` : ''}
+            ${ruleIds}
             ${renderHashTable(evt.beforeHash, evt.afterHash)}
             ${ai.reason ? `<p class="ai-reason">${ai.reason}</p>` : ''}
+            ${recommended}
+            ${alertPolicy}
           </div>
         </div>`;
     }
@@ -182,7 +236,7 @@
     }
 
     function fallbackAiAssessment(evt) {
-      const severityScore = { high: 72, medium: 52, info: 28 };
+      const severityScore = { critical: 90, high: 72, medium: 52, low: 32, info: 28 };
       const base = severityScore[evt.severity] || 24;
       let label = 'Stable';
       if (base >= 70) label = 'Critical';
@@ -288,7 +342,8 @@
       const counters = countersFromEvents(state.events);
       const changesOverTime = computeChangesOverTime(state.events);
       const riskModel = computeRisk(state.events);
-      const latest = state.events[0];
+      const filteredEvents = filterEvents(state.events);
+      const latest = filteredEvents[0] || state.events[0];
 
       const statusCopy = {
         streaming: 'Live feed active',
@@ -324,6 +379,21 @@
               <p class="toolbar-sub">${statusCopy[state.status] || 'Monitoring'}</p>
             </div>
             <button class="btn" id="rebuild-btn">Rebuild baseline</button>
+          </div>
+
+          <div class="toolbar filters">
+            <label class="filter-control">Severity
+              <select id="severity-filter" value="${state.severityFilter}">
+                <option value="all">All</option>
+                <option value="critical">Critical</option>
+                <option value="high">High</option>
+                <option value="medium">Medium</option>
+                <option value="low">Low</option>
+              </select>
+            </label>
+            <label class="filter-control">Search
+              <input id="search-input" type="search" placeholder="Search tags, MITRE, paths" value="${state.searchTerm}" />
+            </label>
           </div>
 
           <section class="grid">
@@ -397,7 +467,7 @@
               <p class="timeline-sub">Showing up to 200 latest changes</p>
             </div>
             <div class="timeline-list">
-              ${state.events.map(renderEvent).join('') || '<p class="empty">No events yet. Touch a file in the watched folder.</p>'}
+              ${filteredEvents.map(renderEvent).join('') || '<p class="empty">No events yet. Touch a file in the watched folder.</p>'}
             </div>
           </section>
 
@@ -429,6 +499,24 @@
             render();
           }, 2000);
         });
+      }
+
+      const severitySelect = document.getElementById('severity-filter');
+      if (severitySelect) {
+        severitySelect.value = state.severityFilter;
+        severitySelect.onchange = (e) => {
+          state.severityFilter = e.target.value;
+          render();
+        };
+      }
+
+      const searchInput = document.getElementById('search-input');
+      if (searchInput) {
+        searchInput.value = state.searchTerm;
+        searchInput.oninput = (e) => {
+          state.searchTerm = e.target.value;
+          render();
+        };
       }
     }
 

@@ -1,24 +1,70 @@
 [
   {
+    "id": "rule.credentials.001",
+    "version": 1,
     "description": "Sensitive credential-bearing paths",
-    "keywords": ["cred", "password", "secret"],
-    "severity": "high",
-    "tags": ["credentials", "sensitive"],
-    "mitre": {
-      "tactic": "Credential Access",
-      "technique_id": "T1552",
-      "technique": "Unsecured Credentials"
+    "enabled": true,
+    "owner": "security-team",
+    "match": {
+      "path_contains": ["cred", "password", "secret", "token"],
+      "extensions": [".env", ".json", ".yaml"]
+    },
+    "environments": ["prod", "staging"],
+    "data_classification": "confidential",
+    "base_severity": "high",
+    "severity_modifiers": [
+      {
+        "if_event_type": "delete",
+        "bump": "critical"
+      }
+    ],
+    "risk_score": 90,
+    "tags": ["credentials", "sensitive", "config"],
+    "mitre": [
+      {
+        "tactic": "Credential Access",
+        "technique_id": "T1552",
+        "technique": "Unsecured Credentials"
+      }
+    ],
+    "recommended_action": "Review the change, rotate affected credentials, and check for unauthorized access.",
+    "alert_policy": {
+      "notify_channels": ["secops-oncall"],
+      "suppress_if_repeated_within_minutes": 5
     }
   },
   {
+    "id": "rule.scripts.001",
+    "version": 1,
     "description": "Script execution surfaces",
-    "extensions": [".sh", ".ps1", ".bat"],
-    "severity": "medium",
-    "tags": ["script"],
-    "mitre": {
-      "tactic": "Execution",
-      "technique_id": "T1059",
-      "technique": "Command and Scripting Interpreter"
+    "enabled": true,
+    "owner": "platform-team",
+    "match": {
+      "extensions": [".sh", ".ps1", ".bat"],
+      "path_contains": ["scripts", "deploy", "startup"]
+    },
+    "environments": ["prod"],
+    "data_classification": "internal",
+    "base_severity": "medium",
+    "severity_modifiers": [
+      {
+        "if_event_type": "modify",
+        "bump": "high"
+      }
+    ],
+    "risk_score": 70,
+    "tags": ["script", "execution-surface"],
+    "mitre": [
+      {
+        "tactic": "Execution",
+        "technique_id": "T1059",
+        "technique": "Command and Scripting Interpreter"
+      }
+    ],
+    "recommended_action": "Validate if the script change was part of an authorized deployment.",
+    "alert_policy": {
+      "notify_channels": ["devops-oncall"],
+      "suppress_if_repeated_within_minutes": 10
     }
   }
 ]
