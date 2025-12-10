@@ -43,6 +43,14 @@
       { id: 'settings', label: 'Settings', icon: '⚙️' }
     ];
 
+    const timeRangeConfig = {
+      '24h': { windowMs: 24 * 60 * 60 * 1000, bucketMs: 60 * 60 * 1000, label: 'last 24 hours', bucketLabel: '60-minute buckets' },
+      '12h': { windowMs: 12 * 60 * 60 * 1000, bucketMs: 30 * 60 * 1000, label: 'last 12 hours', bucketLabel: '30-minute buckets' },
+      '1h': { windowMs: 60 * 60 * 1000, bucketMs: 5 * 60 * 1000, label: 'last hour', bucketLabel: '5-minute buckets' },
+      '15m': { windowMs: 15 * 60 * 1000, bucketMs: 60 * 1000, label: 'last 15 minutes', bucketLabel: '1-minute buckets' },
+      '5m': { windowMs: 5 * 60 * 1000, bucketMs: 30 * 1000, label: 'last 5 minutes', bucketLabel: '30-second buckets' }
+    };
+
     const state = {
       events: [],
       status: 'connecting',
@@ -103,15 +111,23 @@
       return { buckets, maxTotal, totals };
     }
 
-    function computeAlertsOverTime(events) {
-      const windowMs = 12 * 60 * 60 * 1000;
-      const bucketMs = 30 * 60 * 1000;
+    function computeAlertsOverTime(events, rangeKey = '24h') {
+      const config = timeRangeConfig[rangeKey] || timeRangeConfig['24h'];
+      const windowMs = config.windowMs;
+      const bucketMs = config.bucketMs;
       const now = Date.now();
       const start = now - windowMs;
       const buckets = Array.from({ length: Math.ceil(windowMs / bucketMs) }, (_, idx) => {
         const ts = start + idx * bucketMs;
+        const formatOptions = {
+          hour: '2-digit',
+          minute: bucketMs >= 60 * 60 * 1000 ? undefined : '2-digit',
+          hour12: false
+        };
+        if (bucketMs < 60 * 1000) formatOptions.second = '2-digit';
+
         return {
-          label: new Intl.DateTimeFormat('en', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(ts)),
+          label: new Intl.DateTimeFormat('en', formatOptions).format(new Date(ts)),
           counts: { create: 0, modify: 0, delete: 0 }
         };
       });
@@ -128,7 +144,7 @@
         if (total > maxTotal) maxTotal = total;
       });
 
-      return { buckets, maxTotal };
+      return { buckets, maxTotal, windowLabel: config.label, bucketLabel: config.bucketLabel };
     }
 
     function buildSmoothPath(points) {
@@ -424,8 +440,7 @@
 
     function getFilteredEvents() {
       const search = state.eventsFilter.toLowerCase();
-      const windowMap = { '1h': 60 * 60 * 1000, '12h': 12 * 60 * 60 * 1000, '24h': 24 * 60 * 60 * 1000 };
-      const range = windowMap[state.timeRange] || windowMap['24h'];
+      const range = timeRangeConfig[state.timeRange]?.windowMs || timeRangeConfig['24h'].windowMs;
       const now = Date.now();
 
       return state.events
@@ -447,9 +462,11 @@
         }));
     }
 
-    function renderAlertsConsoleSection(alertsModel, filteredEvents) {
+    function renderAlertsConsoleSection(alertsModel, filteredEvents, rangeKey) {
       const selected = state.selectedEvent || filteredEvents[0];
       const latestPath = selected?.file || selected?.path || 'Select an event from the list to see details.';
+      const rangeLabel = alertsModel.windowLabel || 'last 24 hours';
+      const bucketLabel = alertsModel.bucketLabel || 'time buckets';
       const detailRows = selected
         ? [
             ['Path', latestPath],
@@ -475,9 +492,21 @@
               <div>
                 <p class="eyebrow">Live view</p>
                 <h2 class="title-lg">Alerts by action over time</h2>
-                <p class="text-muted">Stacked counts over the last 12h, bucketed every 30 minutes.</p>
+                <p class="text-muted">Stacked counts over the ${rangeLabel} using ${bucketLabel}.</p>
               </div>
-              <div class="legend">${renderLegend()}</div>
+              <div class="flex items-center gap-4">
+                <div class="flex items-center gap-2">
+                  <label for="alerts-range" class="text-muted">Range</label>
+                  <select class="select range-select" id="alerts-range">
+                    <option value="24h" ${rangeKey === '24h' ? 'selected' : ''}>24h</option>
+                    <option value="12h" ${rangeKey === '12h' ? 'selected' : ''}>12h</option>
+                    <option value="1h" ${rangeKey === '1h' ? 'selected' : ''}>1h</option>
+                    <option value="15m" ${rangeKey === '15m' ? 'selected' : ''}>15m</option>
+                    <option value="5m" ${rangeKey === '5m' ? 'selected' : ''}>5m</option>
+                  </select>
+                </div>
+                <div class="legend">${renderLegend()}</div>
+              </div>
             </div>
             ${renderAlertsAreaChart(alertsModel)}
           </section>
@@ -511,10 +540,12 @@
                 <h3 class="title-sm">Recent events</h3>
                 <div class="flex items-center gap-4">
                   <input class="input" id="events-search" type="search" placeholder="Search by path" value="${state.eventsFilter}" />
-                  <select class="select" id="events-range">
+                  <select class="select range-select" id="events-range">
                     <option value="24h" ${state.timeRange === '24h' ? 'selected' : ''}>Last 24h</option>
                     <option value="12h" ${state.timeRange === '12h' ? 'selected' : ''}>Last 12h</option>
                     <option value="1h" ${state.timeRange === '1h' ? 'selected' : ''}>Last hour</option>
+                    <option value="15m" ${state.timeRange === '15m' ? 'selected' : ''}>Last 15m</option>
+                    <option value="5m" ${state.timeRange === '5m' ? 'selected' : ''}>Last 5m</option>
                   </select>
                   <button class="btn ghost" id="events-refresh">Refresh</button>
                 </div>
@@ -716,8 +747,9 @@
       switch (activeSection) {
         case 'alertsConsole':
           return renderAlertsConsoleSection(
-            computeAlertsOverTime(filteredEvents && filteredEvents.length ? filteredEvents : state.events),
-            filteredEvents || getFilteredEvents()
+            computeAlertsOverTime(filteredEvents || [], state.timeRange),
+            filteredEvents || getFilteredEvents(),
+            state.timeRange
           );
         case 'baseline':
           return renderBaselineSection(statusCopy);
@@ -854,13 +886,13 @@
           });
         }
 
-        const rangeSelect = document.getElementById('events-range');
-        if (rangeSelect) {
-          rangeSelect.addEventListener('change', (e) => {
+        const rangeSelects = document.querySelectorAll('.range-select');
+        rangeSelects.forEach((select) => {
+          select.addEventListener('change', (e) => {
             state.timeRange = e.target.value;
             render();
           });
-        }
+        });
 
         const refreshBtn = document.getElementById('events-refresh');
         if (refreshBtn) {
