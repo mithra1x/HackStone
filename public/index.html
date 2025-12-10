@@ -131,6 +131,103 @@
       return { buckets, maxTotal };
     }
 
+    function buildSmoothPath(points) {
+      if (!points.length) return '';
+      if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+      let d = `M ${points[0].x} ${points[0].y}`;
+      for (let i = 1; i < points.length; i += 1) {
+        const prev = points[i - 1];
+        const curr = points[i];
+        const cx = (prev.x + curr.x) / 2;
+        d += ` C ${cx} ${prev.y} ${cx} ${curr.y} ${curr.x} ${curr.y}`;
+      }
+      return d;
+    }
+
+    function renderAlertsAreaChart(alertsModel) {
+      const { buckets, maxTotal } = alertsModel;
+      const chartHeight = 260;
+      const padding = { top: 16, right: 24, bottom: 32, left: 42 };
+      const innerHeight = chartHeight - padding.top - padding.bottom;
+      const width = Math.max(640, buckets.length * 38);
+      const innerWidth = width - padding.left - padding.right;
+      const maxVal = Math.max(maxTotal, 1);
+      const step = buckets.length > 1 ? innerWidth / (buckets.length - 1) : innerWidth;
+      const series = ['create', 'modify', 'delete'];
+      const areaFills = {
+        create: 'rgba(34, 197, 94, 0.22)',
+        modify: 'rgba(245, 158, 11, 0.22)',
+        delete: 'rgba(239, 68, 68, 0.22)'
+      };
+
+      const pointsByType = Object.fromEntries(
+        series.map((type) => [
+          type,
+          buckets.map((bucket, idx) => {
+            const val = bucket.counts[type] || 0;
+            const x = padding.left + idx * step;
+            const y = padding.top + (1 - val / maxVal) * innerHeight;
+            return { x, y, val, label: bucket.label };
+          })
+        ])
+      );
+
+      const hoverRects = buckets
+        .map((bucket, idx) => {
+          const x = padding.left + idx * step - step / 2;
+          const widthRect = idx === 0 || idx === buckets.length - 1 ? step : step;
+          const details = series
+            .map((type) => `${type}: ${bucket.counts[type] || 0}`)
+            .join('  ·  ');
+          return `<rect x="${x}" y="${padding.top}" width="${widthRect}" height="${innerHeight}" fill="transparent">
+              <title>${bucket.label}\n${details}</title>
+            </rect>`;
+        })
+        .join('');
+
+      const paths = series
+        .map((type) => {
+          const pts = pointsByType[type];
+          if (!pts.length) return '';
+          const line = buildSmoothPath(pts);
+          const last = pts[pts.length - 1];
+          const first = pts[0];
+          const area = `${line} L ${last.x} ${padding.top + innerHeight} L ${first.x} ${padding.top + innerHeight} Z`;
+          return `
+            <g class="area-series">
+              <path d="${area}" fill="${areaFills[type]}" />
+              <path d="${line}" stroke="${actionColors[type]}" stroke-width="2.4" fill="none" stroke-linejoin="round" stroke-linecap="round" />
+            </g>`;
+        })
+        .join('');
+
+      const yAxis = [0, maxVal];
+      const yTicks = yAxis
+        .map((tick) => {
+          const y = padding.top + (1 - tick / maxVal) * innerHeight;
+          return `<g class="axis-tick" transform="translate(0, ${y})">
+            <line x1="${padding.left - 6}" x2="${width - padding.right}" y1="0" y2="0" stroke="var(--border)" stroke-width="0.6" stroke-opacity="0.6" />
+            <text x="${padding.left - 10}" y="4" text-anchor="end" class="axis-label">${tick}</text>
+          </g>`;
+        })
+        .join('');
+
+      const xLabels = buckets
+        .map((bucket, idx) => `<div class="chart-label">${idx % 2 === 0 ? bucket.label : ''}</div>`)
+        .join('');
+
+      return `
+        <div class="alerts-area" role="img" aria-label="Alerts by action over time">
+          <svg viewBox="0 0 ${width} ${chartHeight}" preserveAspectRatio="xMidYMid meet">
+            <g>${yTicks}</g>
+            ${paths}
+            <g>${hoverRects}</g>
+          </svg>
+          <div class="chart-x-labels" style="grid-template-columns: repeat(${buckets.length}, 1fr);">${xLabels}</div>
+        </div>
+      `;
+    }
+
     function computeRisk(events) {
       const windowMs = 24 * 60 * 60 * 1000;
       const hourMs = 60 * 60 * 1000;
@@ -382,25 +479,7 @@
               </div>
               <div class="legend">${renderLegend()}</div>
             </div>
-            <div class="alerts-chart-grid">
-              ${alertsModel.buckets
-                .map((bucket) => {
-                  const total = Object.values(bucket.counts).reduce((s, v) => s + v, 0);
-                  const segments = ['create', 'modify', 'delete']
-                    .map((type) => {
-                      const val = bucket.counts[type] || 0;
-                      const pct = alertsModel.maxTotal ? (val / alertsModel.maxTotal) * 100 : 0;
-                      return `<div class="bar-segment" style="height:${pct}%; background:${actionColors[type]};" title="${bucket.label} · ${type}: ${val}"></div>`;
-                    })
-                    .join('');
-                  return `
-                    <div class="chart-bar" aria-label="${bucket.label} alerts">
-                      <div class="bar-stack" data-total="${total}">${segments}</div>
-                      <p class="chart-label">${bucket.label}</p>
-                    </div>`;
-                })
-                .join('')}
-            </div>
+            ${renderAlertsAreaChart(alertsModel)}
           </section>
 
           <div class="alerts-grid">
