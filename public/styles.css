@@ -22,7 +22,14 @@ body {
   min-height: 100vh;
 }
 
-.page { max-width: 1100px; margin: 0 auto; padding: 32px 20px 64px; }
+.page {
+  width: 100%;
+  margin: 0;
+  padding: 32px clamp(24px, 4vw, 32px) 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
 .hero { background: linear-gradient(120deg, #0f172a, #111827); padding: 28px; border-radius: 16px; border: 1px solid var(--border); box-shadow: 0 10px 40px rgba(0,0,0,0.4); }
 .eyebrow { text-transform: uppercase; letter-spacing: 2px; color: var(--muted); font-size: 12px; margin: 0 0 8px; }
 h1 { margin: 0 0 12px; font-size: 32px; }
@@ -35,7 +42,18 @@ h1 { margin: 0 0 12px; font-size: 32px; }
 .stat-value { margin: 6px 0 4px; font-size: 26px; font-weight: 700; }
 .stat-hint { margin: 0; color: var(--muted); font-size: 12px; }
 
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 18px 0; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin: 0; }
+.stats-grid { margin-top: 16px; }
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 18px;
+  align-items: start;
+  width: 100%;
+}
+
+.summary-side { display: grid; gap: 14px; }
 
 .banner { margin: 16px 0; padding: 12px 16px; border-radius: 10px; background: rgba(56, 189, 248, 0.12); color: var(--text); border: 1px solid var(--border); }
 
@@ -50,7 +68,13 @@ h1 { margin: 0 0 12px; font-size: 32px; }
 .bar-stack { width: 100%; height: 160px; border-radius: 8px; background: rgba(148, 163, 184, 0.12); border: 1px solid var(--border); display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; }
 .bar-segment { width: 100%; transition: height 0.2s ease; }
 .chart-label { margin: 0; font-size: 12px; color: var(--muted); text-align: center; }
-.chart-split { display: grid; grid-template-columns: minmax(320px, 1fr) 1.2fr; gap: 16px; margin-top: 16px; align-items: start; }
+.chart-split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+  align-items: start;
+}
 .pie-area { margin-top: 6px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
 .hourly-area { margin-top: 6px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
 .pie-chart { display: flex; flex-direction: column; align-items: center; gap: 10px; }
@@ -130,4 +154,6 @@ h1 { margin: 0 0 12px; font-size: 32px; }
   .risk-body { grid-template-columns: 1fr; }
   .event-header { flex-direction: column; align-items: flex-start; }
   .event-row { grid-template-columns: 36px 1fr; }
+  .summary-grid { grid-template-columns: 1fr; }
+  .stats-grid { grid-template-columns: 1fr; }
 }
