@@ -89,7 +89,10 @@
       sidebarOpen: false,
       selectedEvent: null,
       selectedEventForDetails: null,
-      eventsFilter: '',
+      eventsFilter: {
+        query: '',
+        mode: 'path'
+      },
       timeRange: '24h',
       timelineScrollTop: 0
     };
@@ -578,7 +581,8 @@
     }
 
     function getFilteredEvents() {
-      const search = state.eventsFilter.toLowerCase();
+      const search = state.eventsFilter.query.trim().toLowerCase();
+      const mode = state.eventsFilter.mode || 'path';
       const range = timeRangeConfig[state.timeRange]?.windowMs || timeRangeConfig['24h'].windowMs;
       const now = Date.now();
 
@@ -587,6 +591,12 @@
           const ts = evt.timestamp ? new Date(evt.timestamp).getTime() : now;
           if (Number.isNaN(ts) || now - ts > range) return false;
           if (!search) return true;
+          if (mode === 'action') {
+            return (evt.type || '').toLowerCase().includes(search);
+          }
+          if (mode === 'severity') {
+            return (evt.severity || '').toLowerCase().includes(search);
+          }
           return (
             (evt.file && evt.file.toLowerCase().includes(search)) ||
             (evt.path && evt.path.toLowerCase().includes(search)) ||
@@ -606,6 +616,12 @@
       const latestPath = selected?.file || selected?.path || 'Select an event from the list to see details.';
       const rangeLabel = alertsModel.windowLabel || 'last 24 hours';
       const bucketLabel = alertsModel.bucketLabel || 'time buckets';
+      const filterModeLabel =
+        state.eventsFilter.mode === 'action'
+          ? 'action'
+          : state.eventsFilter.mode === 'severity'
+            ? 'severity'
+            : 'path';
       const detailRows = selected
         ? [
             ['Path', latestPath],
@@ -678,7 +694,12 @@
               <div class="flex items-center justify-between">
                 <h3 class="title-sm">Recent events</h3>
                 <div class="flex items-center gap-4">
-                  <input class="input" id="events-search" type="search" placeholder="Search by path" value="${state.eventsFilter}" />
+                  <select class="select mode-select" id="events-mode">
+                    <option value="path" ${state.eventsFilter.mode === 'path' ? 'selected' : ''}>Path</option>
+                    <option value="action" ${state.eventsFilter.mode === 'action' ? 'selected' : ''}>Action</option>
+                    <option value="severity" ${state.eventsFilter.mode === 'severity' ? 'selected' : ''}>Severity</option>
+                  </select>
+                  <input class="input" id="events-search" type="search" placeholder="Search by ${filterModeLabel}" value="${state.eventsFilter.query}" />
                   <select class="select range-select" id="events-range">
                     <option value="24h" ${state.timeRange === '24h' ? 'selected' : ''}>Last 24h</option>
                     <option value="12h" ${state.timeRange === '12h' ? 'selected' : ''}>Last 12h</option>
@@ -965,6 +986,11 @@
     }
 
     function render() {
+      const activeElement = document.activeElement;
+      const searchHadFocus = activeElement?.id === 'events-search';
+      const searchSelection = searchHadFocus
+        ? { start: activeElement.selectionStart, end: activeElement.selectionEnd }
+        : null;
       const counters = countersFromEvents(state.events);
       const changesOverTime = computeChangesOverTime(state.events);
       const riskModel = computeRisk(state.events);
@@ -1012,6 +1038,16 @@
           </div>
           <div class="sidebar-backdrop ${state.sidebarOpen ? 'visible' : ''}" id="sidebar-backdrop"></div>
         </div>`;
+
+      if (searchHadFocus) {
+        const searchInput = document.getElementById('events-search');
+        if (searchInput) {
+          searchInput.focus();
+          if (searchSelection && typeof searchSelection.start === 'number' && typeof searchSelection.end === 'number') {
+            searchInput.setSelectionRange(searchSelection.start, searchSelection.end);
+          }
+        }
+      }
 
       const rebuildBtn = document.getElementById('rebuild-btn');
       if (rebuildBtn) {
@@ -1063,7 +1099,15 @@
         const searchInput = document.getElementById('events-search');
         if (searchInput) {
           searchInput.addEventListener('input', (e) => {
-            state.eventsFilter = e.target.value;
+            state.eventsFilter.query = e.target.value;
+            render();
+          });
+        }
+
+        const modeSelect = document.getElementById('events-mode');
+        if (modeSelect) {
+          modeSelect.addEventListener('change', (e) => {
+            state.eventsFilter.mode = e.target.value;
             render();
           });
         }
