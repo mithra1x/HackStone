@@ -88,8 +88,10 @@
       activeSection: 'overview',
       sidebarOpen: false,
       selectedEvent: null,
+      selectedEventForDetails: null,
       eventsFilter: '',
-      timeRange: '24h'
+      timeRange: '24h',
+      timelineScrollTop: 0
     };
 
     const formatTime = (ts) => new Intl.DateTimeFormat('en', {
@@ -387,14 +389,19 @@
       return `<span class="pill" style="background-color:${color}">${label}</span>`;
     }
 
-    function renderEvent(evt) {
+    function buildEventKey(evt, idx = 0) {
+      return evt._key || `${evt.timestamp || 't'}-${evt.path || evt.file || idx}-${evt.type || 'evt'}`;
+    }
+
+    function renderEvent(evt, idx) {
       const icon = iconMap[evt.type] || 'ℹ️';
       const mitre = evt.mitre ? pill(`${evt.mitre.id} · ${evt.mitre.name}`, 'var(--slate)') : '';
       const severity = evt.severity ? pill(evt.severity.toUpperCase(), severityHue[evt.severity] || 'var(--slate)') : '';
       const ai = evt.aiAssessment || fallbackAiAssessment(evt);
+      const eventKey = buildEventKey(evt, idx);
 
       return `
-        <div class="event-row">
+        <div class="event-row" data-event-id="${eventKey}" tabindex="0" role="button" aria-label="Open details for ${evt.message || 'event'}">
           <div class="event-icon">${icon}</div>
           <div class="event-body">
             <div class="event-header">
@@ -762,10 +769,78 @@
                 <p class="timeline-sub">Showing up to 200 latest changes</p>
               </div>
               <div class="timeline-list">
-                ${state.events.map(renderEvent).join('') || '<p class="empty">No events yet. Touch a file in the watched folder.</p>'}
+                ${state.events.map((evt, idx) => renderEvent(evt, idx)).join('') || '<p class="empty">No events yet. Touch a file in the watched folder.</p>'}
               </div>
             </section>
           </div>
+        </div>
+      `;
+    }
+
+    function renderEventDetailsSection(evt) {
+      const ai = evt ? evt.aiAssessment || fallbackAiAssessment(evt) : null;
+      const mitreEntries = evt?.mitre ? (Array.isArray(evt.mitre) ? evt.mitre : [evt.mitre]) : [];
+      const mitreValue =
+        mitreEntries.length > 0
+          ? mitreEntries
+              .map((m) => `${m.technique_id || m.id || '—'}${m.tactic ? ` · ${m.tactic}` : ''}${m.name ? ` · ${m.name}` : ''}`)
+              .join(', ')
+          : '—';
+
+      const details = evt
+        ? [
+            ['File path', evt.file || evt.path || '—'],
+            ['Observed time', evt.timestamp ? formatTime(evt.timestamp) : '—'],
+            ['Action', evt.type || '—'],
+            ['User / User ID', evt.user || evt.uid || '—'],
+            ['Group / Group ID', evt.group || evt.gid || '—'],
+            ['Permissions', evt.permissions || '—'],
+            ['Size', evt.size ? `${evt.size} bytes` : '—'],
+            ['SHA-256', evt.sha256 || evt.hash || evt.afterHash || '—'],
+            ['MD5', evt.md5 || '—'],
+            ['Classification / tags', evt.data_classification || evt.tags?.join?.(', ') || '—'],
+            ['MITRE mapping', mitreValue],
+            ['AI risk score', ai ? `${ai.label} · ${ai.score}` : '—'],
+            ['Previous hash', evt.beforeHash || '—'],
+            ['New hash', evt.afterHash || '—'],
+            ['Baseline', evt.baseline ? 'Baseline update' : '—'],
+            ['Rule', evt.rule_id || '—']
+          ]
+        : [];
+
+      return `
+        <div class="stack gap-4">
+          <section class="card event-details">
+            <div class="event-details-top">
+              <button class="btn ghost" id="back-to-overview">← Back to Overview</button>
+              <div class="event-details-header">
+                <div>
+                  <p class="eyebrow">Event Details</p>
+                  <h2 class="title-lg">${evt?.file || evt?.path || 'No event selected'}</h2>
+                  <p class="text-muted">${evt?.timestamp ? formatTime(evt.timestamp) : 'Select a timeline event to view details'}</p>
+                </div>
+                <div class="details-chips">
+                  ${evt?.type ? pill(evt.type.toUpperCase(), actionColors[evt.type] || 'var(--slate)') : ''}
+                  ${evt?.severity ? pill(evt.severity.toUpperCase(), severityHue[evt.severity] || 'var(--slate)') : ''}
+                  ${evt?.timestamp ? pill('Observed', 'var(--slate)') : ''}
+                  ${ai ? `<span class="ai-chip ai-${ai.label.toLowerCase()}">AI: ${ai.label} · ${ai.score}</span>` : ''}
+                </div>
+              </div>
+            </div>
+            <div class="detail-grid">
+              ${details
+                .map(
+                  ([label, value]) => `
+                    <div class="detail-tile">
+                      <p class="detail-label">${label}</p>
+                      <p class="detail-value">${value}</p>
+                    </div>`
+                )
+                .join('') || '<p class="empty">No event selected.</p>'}
+            </div>
+            ${evt ? renderHashTable(evt.beforeHash, evt.afterHash) : ''}
+            ${ai?.reason ? `<p class="ai-reason">${ai.reason}</p>` : ''}
+          </section>
         </div>
       `;
     }
@@ -859,6 +934,8 @@
           return renderChartsSection(changesOverTime, riskModel);
         case 'settings':
           return renderSettingsSection(statusCopy);
+        case 'eventDetails':
+          return renderEventDetailsSection(state.selectedEventForDetails);
         case 'overview':
         default:
           return renderOverviewSection(counters, statusCopy, latest);
@@ -893,7 +970,10 @@
       const riskModel = computeRisk(state.events);
       const latest = state.events[0];
       const filteredEvents = state.activeSection === 'alertsConsole' ? getFilteredEvents() : null;
-      const activeLabel = navItems.find((n) => n.id === state.activeSection)?.label || 'Overview';
+      const activeLabel =
+        state.activeSection === 'eventDetails'
+          ? 'Event Details'
+          : navItems.find((n) => n.id === state.activeSection)?.label || 'Overview';
 
       if (state.activeSection === 'alertsConsole') {
         if (!filteredEvents?.length) {
@@ -1013,6 +1093,47 @@
             render();
           });
         });
+      }
+
+      if (state.activeSection === 'overview') {
+        const keyMap = state.events.reduce((acc, evt, idx) => {
+          acc[buildEventKey(evt, idx)] = evt;
+          return acc;
+        }, {});
+        const timelineRows = document.querySelectorAll('.timeline-list .event-row');
+        const timelineList = document.querySelector('.timeline-list');
+        if (timelineList && typeof state.timelineScrollTop === 'number') {
+          timelineList.scrollTop = state.timelineScrollTop;
+        }
+        timelineRows.forEach((row) => {
+          const evt = keyMap[row.getAttribute('data-event-id')];
+          if (!evt) return;
+          const activate = () => {
+            const listEl = document.querySelector('.timeline-list');
+            state.timelineScrollTop = listEl?.scrollTop || 0;
+            state.selectedEventForDetails = evt;
+            state.activeSection = 'eventDetails';
+            render();
+          };
+          row.addEventListener('click', activate);
+          row.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              activate();
+            }
+          });
+        });
+      }
+
+      if (state.activeSection === 'eventDetails') {
+        const backBtn = document.getElementById('back-to-overview');
+        if (backBtn) {
+          backBtn.addEventListener('click', () => {
+            state.activeSection = 'overview';
+            state.selectedEventForDetails = null;
+            render();
+          });
+        }
       }
     }
 
