@@ -13,6 +13,29 @@ const LOG_FILE = path.join(LOG_DIR, 'fim.log');
 
 const IGNORE_NAMES = new Set(['.DS_Store', 'baseline.json', 'fim.log']);
 const GOVERNANCE_KEYWORDS = /(personal|private|secret|pii)/i;
+const IGNORE_RULES = [
+  {
+    ignore: true,
+    extensions: ['.swp', '.swo'],
+    patterns: ['*.swp', '*.swo', '*~'],
+    description: 'Ignore Vim swap files'
+  },
+  {
+    ignore: true,
+    extensions: ['.tmp'],
+    patterns: ['.tmp', '.*.tmp'],
+    description: 'Ignore temporary placeholder files'
+  },
+  {
+    ignore: true,
+    patterns: ['.*.swp', '.*.swo', '.*~'],
+    description: 'Ignore hidden editor swap/backup files'
+  }
+].map((rule) => ({
+  ...rule,
+  extensions: (rule.extensions || []).map((ext) => ext.toLowerCase()),
+  regexes: (rule.patterns || []).map(globToRegex)
+}));
 
 let baseline = {};
 let eventHistory = [];
@@ -44,10 +67,29 @@ function ensureDirectories() {
   }
 }
 
+function globToRegex(glob) {
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  return new RegExp(`^${escaped}$`);
+}
+
+function fileExtNormalized(name) {
+  const match = name.match(/(\.[^./]+)$/);
+  return match ? match[1].toLowerCase() : '';
+}
+
+function matchesIgnoreRule(rule, name) {
+  const candidate = name.toLowerCase();
+  const ext = fileExtNormalized(candidate);
+  if (rule.extensions && rule.extensions.includes(ext)) return true;
+  if (rule.regexes && rule.regexes.some((regex) => regex.test(candidate))) return true;
+  return false;
+}
+
 function isIgnored(filePath) {
   const name = path.basename(filePath);
   if (IGNORE_NAMES.has(name)) return true;
   if (GOVERNANCE_KEYWORDS.test(filePath)) return true;
+  if (IGNORE_RULES.some((rule) => rule.ignore && matchesIgnoreRule(rule, name))) return true;
   return false;
 }
 
@@ -65,6 +107,7 @@ async function walk(dir, collector = {}) {
   const entries = await fs.promises.readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
+    // Skip ignored files before attempting to descend or hash
     if (isIgnored(fullPath)) continue;
     if (entry.isDirectory()) {
       await walk(fullPath, collector);
@@ -84,6 +127,7 @@ async function loadBaseline() {
   } catch (err) {
     baseline = {};
   }
+  await purgeIgnoredBaselineEntries();
   if (!Object.keys(baseline).length) {
     await rebuildBaseline();
   }
@@ -100,6 +144,20 @@ async function rebuildBaseline() {
     mitre: { id: 'T1036', name: 'Normalization - baseline reset' }
   });
   return baseline;
+}
+
+async function purgeIgnoredBaselineEntries() {
+  let changed = false;
+  for (const rel of Object.keys(baseline)) {
+    const absolute = path.join(WATCH_DIR, rel);
+    if (isIgnored(absolute)) {
+      delete baseline[rel];
+      changed = true;
+    }
+  }
+  if (changed) {
+    await fs.promises.writeFile(BASELINE_FILE, JSON.stringify(baseline, null, 2));
+  }
 }
 
 function logEvent(evt) {
@@ -171,6 +229,7 @@ function broadcast(payload) {
 async function handleChange(kind, filePath) {
   if (!filePath) return;
   const rel = path.relative(WATCH_DIR, filePath);
+  // Drop ignored paths before hashing, diffing, or emitting events
   if (rel.startsWith('..') || isIgnored(filePath)) return;
   const timestamp = new Date().toISOString();
   const mitre = MITRE_LOOKUP[kind];
