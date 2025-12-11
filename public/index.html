@@ -43,11 +43,41 @@
     ];
 
     const timeRangeConfig = {
-      '24h': { windowMs: 24 * 60 * 60 * 1000, bucketMs: 60 * 60 * 1000, label: 'last 24 hours', bucketLabel: '60-minute buckets' },
-      '12h': { windowMs: 12 * 60 * 60 * 1000, bucketMs: 30 * 60 * 1000, label: 'last 12 hours', bucketLabel: '30-minute buckets' },
-      '1h': { windowMs: 60 * 60 * 1000, bucketMs: 5 * 60 * 1000, label: 'last hour', bucketLabel: '5-minute buckets' },
-      '15m': { windowMs: 15 * 60 * 1000, bucketMs: 60 * 1000, label: 'last 15 minutes', bucketLabel: '1-minute buckets' },
-      '5m': { windowMs: 5 * 60 * 1000, bucketMs: 30 * 1000, label: 'last 5 minutes', bucketLabel: '30-second buckets' }
+      '24h': {
+        windowMs: 24 * 60 * 60 * 1000,
+        bucketMs: 45 * 60 * 1000,
+        label: 'last 24 hours',
+        bucketLabel: '45-minute buckets',
+        labelEvery: 4
+      },
+      '12h': {
+        windowMs: 12 * 60 * 60 * 1000,
+        bucketMs: 20 * 60 * 1000,
+        label: 'last 12 hours',
+        bucketLabel: '20-minute buckets',
+        labelEvery: 3
+      },
+      '1h': {
+        windowMs: 60 * 60 * 1000,
+        bucketMs: 3 * 60 * 1000,
+        label: 'last hour',
+        bucketLabel: '3-minute buckets',
+        labelEvery: 5
+      },
+      '15m': {
+        windowMs: 15 * 60 * 1000,
+        bucketMs: 60 * 1000,
+        label: 'last 15 minutes',
+        bucketLabel: '1-minute buckets',
+        labelEvery: 3
+      },
+      '5m': {
+        windowMs: 5 * 60 * 1000,
+        bucketMs: 30 * 1000,
+        label: 'last 5 minutes',
+        bucketLabel: '30-second buckets',
+        labelEvery: 2
+      }
     };
 
     const state = {
@@ -116,6 +146,7 @@
       const bucketMs = config.bucketMs;
       const now = Date.now();
       const start = now - windowMs;
+      const labelEvery = Math.max(config.labelEvery || 2, 1);
       const buckets = Array.from({ length: Math.ceil(windowMs / bucketMs) }, (_, idx) => {
         const ts = start + idx * bucketMs;
         const formatOptions = {
@@ -124,9 +155,13 @@
           hour12: false
         };
         if (bucketMs < 60 * 1000) formatOptions.second = '2-digit';
+        const formatter = new Intl.DateTimeFormat('en', formatOptions);
+        const bucketStartLabel = formatter.format(new Date(ts));
+        const endLabel = formatter.format(new Date(ts + bucketMs));
 
         return {
-          label: new Intl.DateTimeFormat('en', formatOptions).format(new Date(ts)),
+          label: bucketStartLabel,
+          tooltipLabel: `${bucketStartLabel} – ${endLabel}`,
           counts: { create: 0, modify: 0, delete: 0 }
         };
       });
@@ -143,36 +178,86 @@
         if (total > maxTotal) maxTotal = total;
       });
 
-      return { buckets, maxTotal, windowLabel: config.label, bucketLabel: config.bucketLabel };
+      return { buckets, maxTotal, windowLabel: config.label, bucketLabel: config.bucketLabel, labelEvery };
     }
 
     function buildSmoothPath(points) {
       if (!points.length) return '';
       if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+
+      const n = points.length;
+      const dx = [];
+      const dy = [];
+      const slopes = new Array(n).fill(0);
+      const delta = [];
+
+      for (let i = 0; i < n - 1; i += 1) {
+        dx[i] = points[i + 1].x - points[i].x;
+        dy[i] = points[i + 1].y - points[i].y;
+        delta[i] = dx[i] !== 0 ? dy[i] / dx[i] : 0;
+      }
+
+      slopes[0] = delta[0];
+      slopes[n - 1] = delta[n - 2];
+
+      for (let i = 1; i < n - 1; i += 1) {
+        if (delta[i - 1] * delta[i] <= 0) {
+          slopes[i] = 0;
+        } else {
+          slopes[i] = (delta[i - 1] + delta[i]) / 2;
+        }
+      }
+
+      for (let i = 0; i < n - 1; i += 1) {
+        if (delta[i] === 0) {
+          slopes[i] = 0;
+          slopes[i + 1] = 0;
+        } else {
+          const a = slopes[i] / delta[i];
+          const b = slopes[i + 1] / delta[i];
+          const sum = a * a + b * b;
+          if (sum > 9) {
+            const t = 3 / Math.sqrt(sum);
+            slopes[i] = t * a * delta[i];
+            slopes[i + 1] = t * b * delta[i];
+          }
+        }
+      }
+
       let d = `M ${points[0].x} ${points[0].y}`;
-      for (let i = 1; i < points.length; i += 1) {
-        const prev = points[i - 1];
-        const curr = points[i];
-        const cx = (prev.x + curr.x) / 2;
-        d += ` C ${cx} ${prev.y} ${cx} ${curr.y} ${curr.x} ${curr.y}`;
+      for (let i = 0; i < n - 1; i += 1) {
+        const p0 = points[i];
+        const p1 = points[i + 1];
+        const h = dx[i];
+        const cp1x = p0.x + h / 3;
+        const cp1y = p0.y + slopes[i] * h / 3;
+        const cp2x = p1.x - h / 3;
+        const cp2y = p1.y - slopes[i + 1] * h / 3;
+        d += ` C ${cp1x} ${cp1y} ${cp2x} ${cp2y} ${p1.x} ${p1.y}`;
       }
       return d;
     }
 
     function renderAlertsAreaChart(alertsModel) {
-      const { buckets, maxTotal } = alertsModel;
+      const { buckets, maxTotal, labelEvery } = alertsModel;
       const chartHeight = 260;
       const padding = { top: 16, right: 24, bottom: 32, left: 42 };
       const innerHeight = chartHeight - padding.top - padding.bottom;
       const width = Math.max(640, buckets.length * 38);
       const innerWidth = width - padding.left - padding.right;
-      const maxVal = Math.max(maxTotal, 1);
+      const paddedMax = (() => {
+        const raw = Math.max(maxTotal, 1) * 1.2;
+        const magnitude = 10 ** Math.floor(Math.log10(raw));
+        const rounded = Math.ceil(raw / magnitude * 2) / 2 * magnitude;
+        return Math.max(1, Math.round(rounded));
+      })();
+      const maxVal = paddedMax;
       const step = buckets.length > 1 ? innerWidth / (buckets.length - 1) : innerWidth;
       const series = ['create', 'modify', 'delete'];
       const areaFills = {
-        create: 'rgba(34, 197, 94, 0.22)',
-        modify: 'rgba(245, 158, 11, 0.22)',
-        delete: 'rgba(239, 68, 68, 0.22)'
+        create: 'rgba(34, 197, 94, 0.14)',
+        modify: 'rgba(245, 158, 11, 0.14)',
+        delete: 'rgba(239, 68, 68, 0.14)'
       };
 
       const pointsByType = Object.fromEntries(
@@ -191,11 +276,12 @@
         .map((bucket, idx) => {
           const x = padding.left + idx * step - step / 2;
           const widthRect = idx === 0 || idx === buckets.length - 1 ? step : step;
+          const total = Object.values(bucket.counts).reduce((sum, v) => sum + v, 0);
           const details = series
             .map((type) => `${type}: ${bucket.counts[type] || 0}`)
             .join('  ·  ');
           return `<rect x="${x}" y="${padding.top}" width="${widthRect}" height="${innerHeight}" fill="transparent">
-              <title>${bucket.label}\n${details}</title>
+              <title>${bucket.tooltipLabel || bucket.label}\n${details}\nTotal: ${total}</title>
             </rect>`;
         })
         .join('');
@@ -207,16 +293,22 @@
           const line = buildSmoothPath(pts);
           const last = pts[pts.length - 1];
           const first = pts[0];
+          const peak = pts.reduce((best, p) => (p.val > best.val ? p : best), pts[0]);
           const area = `${line} L ${last.x} ${padding.top + innerHeight} L ${first.x} ${padding.top + innerHeight} Z`;
           return `
             <g class="area-series">
               <path d="${area}" fill="${areaFills[type]}" />
               <path d="${line}" stroke="${actionColors[type]}" stroke-width="2.4" fill="none" stroke-linejoin="round" stroke-linecap="round" />
+              <circle cx="${last.x}" cy="${last.y}" r="4" fill="${actionColors[type]}" stroke="var(--card-bg)" stroke-width="1.4" />
+              <circle cx="${last.x}" cy="${last.y}" r="7" fill="none" stroke="${actionColors[type]}" stroke-opacity="0.32" stroke-width="1.6" />
+              ${peak.val > 0 ? `<text x="${peak.x}" y="${Math.max(padding.top + 12, peak.y - 12)}" class="peak-label" text-anchor="middle">Peak: ${peak.val}</text>` : ''}
             </g>`;
         })
         .join('');
 
-      const yAxis = [0, maxVal];
+      const tickCount = 5;
+      const stepY = Math.max(1, Math.round(maxVal / (tickCount - 1)));
+      const yAxis = Array.from({ length: tickCount }, (_, i) => (i === tickCount - 1 ? maxVal : Math.min(maxVal, stepY * i)));
       const yTicks = yAxis
         .map((tick) => {
           const y = padding.top + (1 - tick / maxVal) * innerHeight;
@@ -228,7 +320,7 @@
         .join('');
 
       const xLabels = buckets
-        .map((bucket, idx) => `<div class="chart-label">${idx % 2 === 0 ? bucket.label : ''}</div>`)
+        .map((bucket, idx) => `<div class="chart-label">${idx % labelEvery === 0 ? bucket.label : ''}</div>`)
         .join('');
 
       return `
