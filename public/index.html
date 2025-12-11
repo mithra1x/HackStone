@@ -35,11 +35,61 @@
       delete: 'rgba(239, 68, 68, 0.9)'
     };
 
+    const navItems = [
+      { id: 'overview', label: 'Overview', icon: '📊' },
+      { id: 'alertsConsole', label: 'Alerts Console', icon: '🚨' },
+      { id: 'charts', label: 'Charts', icon: '📈' },
+      { id: 'settings', label: 'Settings', icon: '⚙️' }
+    ];
+
+    const timeRangeConfig = {
+      '24h': {
+        windowMs: 24 * 60 * 60 * 1000,
+        bucketMs: 45 * 60 * 1000,
+        label: 'last 24 hours',
+        bucketLabel: '45-minute buckets',
+        labelEvery: 3
+      },
+      '12h': {
+        windowMs: 12 * 60 * 60 * 1000,
+        bucketMs: 30 * 60 * 1000,
+        label: 'last 12 hours',
+        bucketLabel: '30-minute buckets',
+        labelEvery: 2
+      },
+      '1h': {
+        windowMs: 60 * 60 * 1000,
+        bucketMs: 5 * 60 * 1000,
+        label: 'last hour',
+        bucketLabel: '5-minute buckets',
+        labelEvery: 3
+      },
+      '15m': {
+        windowMs: 15 * 60 * 1000,
+        bucketMs: 90 * 1000,
+        label: 'last 15 minutes',
+        bucketLabel: '90-second buckets',
+        labelEvery: 2
+      },
+      '5m': {
+        windowMs: 5 * 60 * 1000,
+        bucketMs: 45 * 1000,
+        label: 'last 5 minutes',
+        bucketLabel: '45-second buckets',
+        labelEvery: 2
+      }
+    };
+
     const state = {
       events: [],
       status: 'connecting',
       baselineSize: 0,
-      alert: ''
+      alert: '',
+      activeSection: 'overview',
+      sidebarOpen: false,
+      selectedEvent: null,
+      eventsFilter: '',
+      timeRange: '24h'
     };
 
     const formatTime = (ts) => new Intl.DateTimeFormat('en', {
@@ -88,6 +138,182 @@
       );
 
       return { buckets, maxTotal, totals };
+    }
+
+    function formatBucketLabel(ts, bucketMs) {
+      const opts = { hour: '2-digit', hour12: false };
+      if (bucketMs < 60 * 60 * 1000) opts.minute = '2-digit';
+      if (bucketMs < 60 * 1000) opts.second = '2-digit';
+      return new Intl.DateTimeFormat('en', opts).format(new Date(ts));
+    }
+
+    function computeAlertsOverTime(events, rangeKey = '24h') {
+      const config = timeRangeConfig[rangeKey] || timeRangeConfig['24h'];
+      const windowMs = config.windowMs;
+      const bucketMs = config.bucketMs;
+      const now = Date.now();
+      const start = now - windowMs;
+      const buckets = Array.from({ length: Math.ceil(windowMs / bucketMs) }, (_, idx) => {
+        const ts = start + idx * bucketMs;
+        const fullLabel = formatBucketLabel(ts, bucketMs);
+        const displayLabel =
+          idx % (config.labelEvery || 2) === 0 || idx === Math.ceil(windowMs / bucketMs) - 1
+            ? fullLabel
+            : '';
+        return {
+          ts,
+          label: fullLabel,
+          displayLabel,
+          counts: { create: 0, modify: 0, delete: 0 }
+        };
+      });
+
+      let maxTotal = 1;
+      events.forEach((evt) => {
+        if (!evt.timestamp) return;
+        const ts = new Date(evt.timestamp).getTime();
+        if (Number.isNaN(ts) || ts < start || ts > now) return;
+        const idx = Math.min(Math.floor((ts - start) / bucketMs), buckets.length - 1);
+        const type = ['create', 'modify', 'delete'].includes(evt.type) ? evt.type : 'modify';
+        buckets[idx].counts[type] += 1;
+        const total = Object.values(buckets[idx].counts).reduce((sum, val) => sum + val, 0);
+        if (total > maxTotal) maxTotal = total;
+      });
+
+      return { buckets, maxTotal, windowLabel: config.label, bucketLabel: config.bucketLabel };
+    }
+
+    function buildSmoothPath(points, tension = 0.2) {
+      if (!points.length) return '';
+      if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+      let d = `M ${points[0].x} ${points[0].y}`;
+      for (let i = 0; i < points.length - 1; i += 1) {
+        const p0 = points[i - 1] || points[i];
+        const p1 = points[i];
+        const p2 = points[i + 1];
+        const p3 = points[i + 2] || p2;
+        const cp1x = p1.x + (p2.x - p0.x) * tension;
+        const cp1y = p1.y + (p2.y - p0.y) * tension;
+        const cp2x = p2.x - (p3.x - p1.x) * tension;
+        const cp2y = p2.y - (p3.y - p1.y) * tension;
+        d += ` C ${cp1x} ${cp1y} ${cp2x} ${cp2y} ${p2.x} ${p2.y}`;
+      }
+      return d;
+    }
+
+    function renderAlertsAreaChart(alertsModel) {
+      const { buckets, maxTotal } = alertsModel;
+      const chartHeight = 280;
+      const padding = { top: 18, right: 28, bottom: 36, left: 46 };
+      const innerHeight = chartHeight - padding.top - padding.bottom;
+      const width = Math.max(620, buckets.length * 32);
+      const innerWidth = width - padding.left - padding.right;
+      const maxValRaw = Math.max(
+        maxTotal,
+        ...buckets.map((b) => Object.values(b.counts).reduce((sum, v) => sum + v, 0)),
+        1
+      );
+      const paddedMax = Math.ceil(maxValRaw * 1.2);
+      const niceStep = (() => {
+        const rough = paddedMax / 5;
+        const pow = 10 ** Math.floor(Math.log10(rough));
+        const d = rough / pow;
+        const nice = d >= 5 ? 5 * pow : d >= 2 ? 2 * pow : pow;
+        return nice || 1;
+      })();
+      const maxVal = Math.max(niceStep * 5, paddedMax);
+      const yTicks = Array.from({ length: 6 }, (_, i) => i * niceStep).filter((v) => v <= maxVal);
+      const step = buckets.length > 1 ? innerWidth / (buckets.length - 1) : innerWidth;
+      const series = ['create', 'modify', 'delete'];
+      const areaFills = {
+        create: 'rgba(34, 197, 94, 0.14)',
+        modify: 'rgba(245, 158, 11, 0.14)',
+        delete: 'rgba(239, 68, 68, 0.14)'
+      };
+
+      const pointsByType = Object.fromEntries(
+        series.map((type) => [
+          type,
+          buckets.map((bucket, idx) => {
+            const val = bucket.counts[type] || 0;
+            const x = padding.left + idx * step;
+            const y = padding.top + (1 - val / maxVal) * innerHeight;
+            return { x, y, val, label: bucket.label, ts: bucket.ts, total: Object.values(bucket.counts).reduce((sum, v) => sum + v, 0) };
+          })
+        ])
+      );
+
+      const highlightCircles = [];
+      const peakLabels = [];
+
+      const paths = series
+        .map((type) => {
+          const pts = pointsByType[type];
+          if (!pts.length) return '';
+          const line = buildSmoothPath(pts, 0.18);
+          const last = pts[pts.length - 1];
+          const first = pts[0];
+          const area = `${line} L ${last.x} ${padding.top + innerHeight} L ${first.x} ${padding.top + innerHeight} Z`;
+          const peak = pts.reduce((top, p) => (p.val > top.val ? p : top), pts[0]);
+          highlightCircles.push(`<circle cx="${last.x}" cy="${last.y}" r="4.2" fill="${actionColors[type]}" stroke="rgba(255,255,255,0.65)" stroke-width="1.4" />`);
+          peakLabels.push(
+            `<g class="peak-label">
+              <circle cx="${peak.x}" cy="${peak.y}" r="3" fill="${actionColors[type]}" />
+              <text x="${peak.x + 8}" y="${peak.y - 8}" class="axis-label">Peak: ${peak.val}</text>
+            </g>`
+          );
+          return `
+            <g class="area-series">
+              <path d="${area}" fill="${areaFills[type]}" />
+              <path d="${line}" stroke="${actionColors[type]}" stroke-width="2.6" fill="none" stroke-linejoin="round" stroke-linecap="round" />
+            </g>`;
+        })
+        .join('');
+
+      const yAxis = yTicks
+        .map((tick) => {
+          const y = padding.top + (1 - tick / maxVal) * innerHeight;
+          return `<g class="axis-tick" transform="translate(0, ${y})">
+            <line x1="${padding.left - 6}" x2="${width - padding.right}" y1="0" y2="0" stroke="var(--border)" stroke-width="0.6" stroke-opacity="0.5" />
+            <text x="${padding.left - 10}" y="4" text-anchor="end" class="axis-label">${tick}</text>
+          </g>`;
+        })
+        .join('');
+
+      const labelStep = Math.max(1, Math.floor(buckets.length / 8));
+      const xLabels = buckets
+        .map((bucket, idx) => {
+          const show = bucket.displayLabel && (idx % labelStep === 0 || idx === buckets.length - 1);
+          return `<div class="chart-label">${show ? bucket.displayLabel : ''}</div>`;
+        })
+        .join('');
+
+      const hoverRects = buckets
+        .map((bucket, idx) => {
+          const x = padding.left + idx * step - step / 2;
+          const widthRect = step;
+          const details = series
+            .map((type) => `${type}: ${bucket.counts[type] || 0}`)
+            .concat([`total: ${Object.values(bucket.counts).reduce((sum, v) => sum + v, 0)}`])
+            .join('  ·  ');
+          return `<rect x="${x}" y="${padding.top}" width="${widthRect}" height="${innerHeight}" fill="transparent">
+              <title>${bucket.label}\n${details}</title>
+            </rect>`;
+        })
+        .join('');
+
+      return `
+        <div class="alerts-area" role="img" aria-label="Alerts by action over time">
+          <svg viewBox="0 0 ${width} ${chartHeight}" preserveAspectRatio="xMidYMid meet">
+            <g>${yAxis}</g>
+            ${paths}
+            <g>${peakLabels.join('')}</g>
+            <g>${highlightCircles.join('')}</g>
+            <g>${hoverRects}</g>
+          </svg>
+          <div class="chart-x-labels" style="grid-template-columns: repeat(${buckets.length}, 1fr);">${xLabels}</div>
+        </div>
+      `;
     }
 
     function computeRisk(events) {
@@ -256,21 +482,62 @@
         </div>`;
     }
 
-    function renderHourlyChart(model) {
-      return model.buckets.map((bucket) => {
-        const total = Object.values(bucket.counts).reduce((sum, val) => sum + val, 0);
-        const bars = ['create', 'modify', 'delete'].map((type) => {
-          const value = bucket.counts[type] || 0;
-          const pct = model.maxTotal ? (value / model.maxTotal) * 100 : 0;
-          return `<div class="bar-segment" style="height:${pct}%; background:${actionColors[type]};" title="${bucket.label} · ${type}: ${value}"></div>`;
-        }).join('');
+    function renderHourlyLineChart(model) {
+      const { buckets, maxTotal } = model;
+      const chartHeight = 240;
+      const padding = { top: 16, right: 24, bottom: 32, left: 46 };
+      const innerHeight = chartHeight - padding.top - padding.bottom;
+      const width = Math.max(560, buckets.length * 34);
+      const innerWidth = width - padding.left - padding.right;
+      const maxVal = Math.max(maxTotal, 1);
+      const step = buckets.length > 1 ? innerWidth / (buckets.length - 1) : innerWidth;
+      const series = ['create', 'modify', 'delete'];
 
-        return `
-          <div class="chart-bar" aria-label="${bucket.label} changes">
-            <div class="bar-stack" data-total="${total}">${bars}</div>
-            <p class="chart-label">${bucket.label}</p>
-          </div>`;
-      }).join('');
+      const yTicks = Array.from({ length: 5 }, (_, i) => Math.round((maxVal / 4) * i));
+      const yGrid = yTicks
+        .map((tick) => {
+          const y = padding.top + (1 - tick / maxVal) * innerHeight;
+          return `<g class="axis-tick" transform="translate(0, ${y})">
+              <line x1="${padding.left}" x2="${width - padding.right}" y1="0" y2="0" stroke="var(--border)" stroke-width="0.6" stroke-dasharray="4 4" />
+              <text x="${padding.left - 10}" y="4" text-anchor="end" class="axis-label">${tick}</text>
+            </g>`;
+        })
+        .join('');
+
+      const xLabels = buckets
+        .map((bucket, idx) => `<div class="chart-label">${idx % 2 === 0 ? bucket.label : ''}</div>`)
+        .join('');
+
+      const lines = series
+        .map((type) => {
+          const points = buckets.map((bucket, idx) => {
+            const val = bucket.counts[type] || 0;
+            const x = padding.left + idx * step;
+            const y = padding.top + (1 - val / maxVal) * innerHeight;
+            return { x, y, val, label: bucket.label };
+          });
+          if (!points.length) return '';
+          const line = buildSmoothPath(points);
+          const dots = points
+            .map((pt) => `<circle cx="${pt.x}" cy="${pt.y}" r="3.5" fill="${actionColors[type]}" opacity="0.9"><title>${pt.label} · ${type}: ${pt.val}</title></circle>`)
+            .join('');
+          return `
+            <g class="line-series">
+              <path d="${line}" fill="none" stroke="${actionColors[type]}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
+              ${dots}
+            </g>`;
+        })
+        .join('');
+
+      return `
+        <div class="line-chart" role="img" aria-label="Changes by hour line chart">
+          <svg viewBox="0 0 ${width} ${chartHeight}" preserveAspectRatio="xMidYMid meet">
+            <g>${yGrid}</g>
+            ${lines}
+          </svg>
+          <div class="chart-x-labels" style="grid-template-columns: repeat(${buckets.length}, 1fr);">${xLabels}</div>
+        </div>
+      `;
     }
 
     function renderRiskChart(risk) {
@@ -284,24 +551,149 @@
       }).join('');
     }
 
-    function render() {
-      const counters = countersFromEvents(state.events);
-      const changesOverTime = computeChangesOverTime(state.events);
-      const riskModel = computeRisk(state.events);
-      const latest = state.events[0];
+    function getFilteredEvents() {
+      const search = state.eventsFilter.toLowerCase();
+      const range = timeRangeConfig[state.timeRange]?.windowMs || timeRangeConfig['24h'].windowMs;
+      const now = Date.now();
 
-      const statusCopy = {
-        streaming: 'Live feed active',
-        ready: 'Loaded from API',
-        connecting: 'Connecting…',
-        disconnected: 'Stream disconnected',
-        error: 'API unreachable'
-      };
+      return state.events
+        .filter((evt) => {
+          const ts = evt.timestamp ? new Date(evt.timestamp).getTime() : now;
+          if (Number.isNaN(ts) || now - ts > range) return false;
+          if (!search) return true;
+          return (
+            (evt.file && evt.file.toLowerCase().includes(search)) ||
+            (evt.path && evt.path.toLowerCase().includes(search)) ||
+            (evt.message && evt.message.toLowerCase().includes(search)) ||
+            (evt.description && evt.description.toLowerCase().includes(search))
+          );
+        })
+        .slice(0, 100)
+        .map((evt, idx) => ({
+          ...evt,
+          _key: evt._key || `${evt.timestamp || 't'}-${evt.path || evt.file || idx}-${evt.type || 'evt'}`
+        }));
+    }
 
-      document.getElementById('root').innerHTML = `
-        <main class="page">
-          <section class="summary-grid">
-            <header class="hero">
+    function renderAlertsConsoleSection(alertsModel, filteredEvents, rangeKey) {
+      const selected = state.selectedEvent || filteredEvents[0];
+      const latestPath = selected?.file || selected?.path || 'Select an event from the list to see details.';
+      const rangeLabel = alertsModel.windowLabel || 'last 24 hours';
+      const bucketLabel = alertsModel.bucketLabel || 'time buckets';
+      const detailRows = selected
+        ? [
+            ['Path', latestPath],
+            ['Observed', selected?.timestamp ? formatTime(selected.timestamp) : '—'],
+            ['Action', selected?.type || '—'],
+            ['User', selected?.user || selected?.uid || '—'],
+            ['Group', selected?.group || selected?.gid || '—'],
+            ['Permissions', selected?.permissions || '—'],
+            ['Size', selected?.size ? `${selected.size} bytes` : '—'],
+            ['Hash', selected?.hash || selected?.sha256 || '—'],
+            ['Severity', selected?.severity || '—'],
+            ['Classification', selected?.data_classification || '—'],
+            ['Tags', selected?.tags?.join?.(', ') || '—'],
+            ['Rule', selected?.rule_id || '—'],
+            ['MITRE', selected?.mitre?.map?.((m) => `${m.technique_id || m.id || m.name} (${m.tactic || m.name || ''})`).join(', ') || '—']
+          ]
+        : [];
+
+      return `
+        <div class="stack gap-4">
+          <section class="card alerts-chart">
+            <div class="flex items-center justify-between">
+              <div>
+                <p class="eyebrow">Live view</p>
+                <h2 class="title-lg">Alerts by action over time</h2>
+                <p class="text-muted">Smoothed counts over the ${rangeLabel} using ${bucketLabel}.</p>
+              </div>
+              <div class="flex items-center gap-4">
+                <div class="flex items-center gap-2">
+                  <label for="alerts-range" class="text-muted">Range</label>
+                  <select class="select range-select" id="alerts-range">
+                    <option value="24h" ${rangeKey === '24h' ? 'selected' : ''}>24h</option>
+                    <option value="12h" ${rangeKey === '12h' ? 'selected' : ''}>12h</option>
+                    <option value="1h" ${rangeKey === '1h' ? 'selected' : ''}>1h</option>
+                    <option value="15m" ${rangeKey === '15m' ? 'selected' : ''}>15m</option>
+                    <option value="5m" ${rangeKey === '5m' ? 'selected' : ''}>5m</option>
+                  </select>
+                </div>
+                <div class="legend">${renderLegend()}</div>
+              </div>
+            </div>
+            ${renderAlertsAreaChart(alertsModel)}
+          </section>
+
+          <div class="alerts-grid">
+            <section class="card details-card">
+              <div class="flex items-center justify-between">
+                <h3 class="title-sm">Details</h3>
+                ${selected ? `<span class="pill">${selected?.severity || 'info'}</span>` : ''}
+              </div>
+              ${selected
+                ? `
+                  <p class="text-muted">${selected?.message || 'File event'}</p>
+                  <div class="details-grid">
+                    ${detailRows
+                      .map(
+                        ([label, value]) => `
+                          <div class="detail-item">
+                            <p class="detail-label">${label}</p>
+                            <p class="detail-value">${value}</p>
+                          </div>`
+                      )
+                      .join('')}
+                  </div>
+                `
+                : '<p class="empty">Select an event from the list to see details.</p>'}
+            </section>
+
+            <section class="card events-card">
+              <div class="flex items-center justify-between">
+                <h3 class="title-sm">Recent events</h3>
+                <div class="flex items-center gap-4">
+                  <input class="input" id="events-search" type="search" placeholder="Search by path" value="${state.eventsFilter}" />
+                  <select class="select range-select" id="events-range">
+                    <option value="24h" ${state.timeRange === '24h' ? 'selected' : ''}>Last 24h</option>
+                    <option value="12h" ${state.timeRange === '12h' ? 'selected' : ''}>Last 12h</option>
+                    <option value="1h" ${state.timeRange === '1h' ? 'selected' : ''}>Last hour</option>
+                    <option value="15m" ${state.timeRange === '15m' ? 'selected' : ''}>Last 15m</option>
+                    <option value="5m" ${state.timeRange === '5m' ? 'selected' : ''}>Last 5m</option>
+                  </select>
+                  <button class="btn ghost" id="events-refresh">Refresh</button>
+                </div>
+              </div>
+              <div class="events-table" role="table">
+                <div class="events-head" role="row">
+                  <span>Time</span><span>Action</span><span>Description</span><span>Severity</span><span>Rule</span>
+                </div>
+                <div class="events-body" role="rowgroup">
+                  ${filteredEvents
+                    .map((evt, idx) => {
+                      const isActive = selected && (selected === evt || selected._key === evt._key);
+                      return `
+                        <button class="event-row-btn ${isActive ? 'active' : ''}" data-event-index="${idx}" role="row">
+                          <span>${evt.timestamp ? formatTime(evt.timestamp) : '—'}</span>
+                          <span class="flex items-center gap-2"><span class="pill compact">${evt.type || 'info'}</span>${evt.file || evt.path || '—'}</span>
+                          <span class="truncate">${evt.message || evt.description || 'File event'}</span>
+                          <span>${evt.severity || 'info'}</span>
+                          <span>${evt.rule_id || '—'}</span>
+                        </button>`;
+                    })
+                    .join('') || '<p class="empty">No events available.</p>'}
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderOverviewSection(counters, statusCopy, latest) {
+      return `
+        <div class="stack gap-4">
+          <div class="card-grid">
+            <header class="hero card">
               <div>
                 <p class="eyebrow">Real-time File Integrity Monitoring</p>
                 <h1>Trust, but verify every file change</h1>
@@ -317,9 +709,8 @@
               </div>
             </header>
 
-            <div class="summary-side">
+            <div class="card summary-side">
               ${state.alert ? `<div class="banner">${state.alert}</div>` : ''}
-
               <div class="toolbar">
                 <div>
                   <p class="toolbar-title">Secure baseline: ${state.baselineSize} files</p>
@@ -327,16 +718,43 @@
                 </div>
                 <button class="btn" id="rebuild-btn">Rebuild baseline</button>
               </div>
-
               <section class="grid stats-grid">
                 <div class="stat-card"><p class="stat-title">Creates</p><p class="stat-value">${counters.create}</p><p class="stat-hint">New files in scope</p></div>
                 <div class="stat-card"><p class="stat-title">Modifications</p><p class="stat-value">${counters.modify}</p><p class="stat-hint">Content tampering</p></div>
                 <div class="stat-card"><p class="stat-title">Deletes</p><p class="stat-value">${counters.delete}</p><p class="stat-hint">Potential destruction</p></div>
               </section>
             </div>
-          </section>
+          </div>
 
-          <section class="chart">
+          <div class="stack gap-4">
+            ${latest ? `
+              <section class="alert-card card">
+                <div class="alert-icon">${iconMap[latest.type] || '⚠️'}</div>
+                <div>
+                  <p class="alert-title">Most recent action</p>
+                  <p class="alert-body">${latest.message}</p>
+                  <p class="alert-meta">${formatTime(latest.timestamp)}</p>
+                </div>
+              </section>` : ''}
+
+            <section class="timeline card">
+              <div class="timeline-head">
+                <h2>Timeline of actions</h2>
+                <p class="timeline-sub">Showing up to 200 latest changes</p>
+              </div>
+              <div class="timeline-list">
+                ${state.events.map(renderEvent).join('') || '<p class="empty">No events yet. Touch a file in the watched folder.</p>'}
+              </div>
+            </section>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderChartsSection(changesOverTime, riskModel) {
+      return `
+        <div class="stack gap-4">
+          <section class="chart card">
             <div class="chart-head">
               <div>
                 <p class="eyebrow">Changes over time (last 24h)</p>
@@ -354,14 +772,14 @@
                 <div class="chart-head-sub">
                   <p class="eyebrow">Hourly breakdown</p>
                   <h3>Changes by hour</h3>
-                  <p class="chart-subtitle">Stacked bars sized to the busiest hour</p>
+                  <p class="chart-subtitle">Smoothed lines for create / modify / delete trends</p>
                 </div>
-                <div class="chart-grid">${renderHourlyChart(changesOverTime)}</div>
+                <div class="chart-line-wrap">${renderHourlyLineChart(changesOverTime)}</div>
               </div>
             </div>
           </section>
 
-          <section class="risk-card">
+          <section class="risk-card card">
             <div class="risk-head">
               <div>
                 <p class="eyebrow">AI risk assessment</p>
@@ -384,36 +802,117 @@
               </div>
             </div>
           </section>
+        </div>
+      `;
+    }
 
-          ${latest ? `
-            <section class="alert-card">
-              <div class="alert-icon">${iconMap[latest.type] || '⚠️'}</div>
+    function renderSettingsSection(statusCopy) {
+      return `
+        <div class="stack gap-4">
+          <div class="card">
+            <div class="flex items-center justify-between">
               <div>
-                <p class="alert-title">Most recent action</p>
-                <p class="alert-body">${latest.message}</p>
-                <p class="alert-meta">${formatTime(latest.timestamp)}</p>
+                <p class="eyebrow">Monitoring status</p>
+                <h2 class="title-lg">${statusCopy[state.status] || 'Monitoring'}</h2>
+                <p class="text-muted">Adjust operational controls and recovery actions.</p>
               </div>
-            </section>` : ''}
-
-          <section class="timeline">
-            <div class="timeline-head">
-              <h2>Timeline of actions</h2>
-              <p class="timeline-sub">Showing up to 200 latest changes</p>
+              <button class="btn" id="rebuild-btn">Rebuild baseline</button>
             </div>
-            <div class="timeline-list">
-              ${state.events.map(renderEvent).join('') || '<p class="empty">No events yet. Touch a file in the watched folder.</p>'}
-            </div>
-          </section>
+          </div>
+          <div class="grid stats-grid">
+            <div class="stat-card"><p class="stat-title">Notifications</p><p class="stat-value">On deck</p><p class="stat-hint">Add webhook targets</p></div>
+            <div class="stat-card"><p class="stat-title">Scope</p><p class="stat-value">watched/</p><p class="stat-hint">Single critical directory</p></div>
+            <div class="stat-card"><p class="stat-title">Retention</p><p class="stat-value">24h view</p><p class="stat-hint">Event window for charts</p></div>
+          </div>
+        </div>
+      `;
+    }
 
-          <section class="howto">
-            <h3>Operational notes</h3>
-            <ul>
-              <li>Monitors the <code>watched/</code> directory. Update config in <code>server/index.js</code> if needed.</li>
-              <li>Baseline hashes are stored at <code>data/baseline.json</code>. Use the rebuild button after trusted maintenance.</li>
-              <li>Logs stream to <code>logs/fim.log</code> using JSON Lines to preserve integrity.</li>
-            </ul>
-          </section>
-        </main>`;
+    function renderMain(activeSection, counters, statusCopy, changesOverTime, riskModel, latest, filteredEvents) {
+      switch (activeSection) {
+        case 'alertsConsole':
+          return renderAlertsConsoleSection(
+            computeAlertsOverTime(filteredEvents || [], state.timeRange),
+            filteredEvents || getFilteredEvents(),
+            state.timeRange
+          );
+        case 'charts':
+          return renderChartsSection(changesOverTime, riskModel);
+        case 'settings':
+          return renderSettingsSection(statusCopy);
+        case 'overview':
+        default:
+          return renderOverviewSection(counters, statusCopy, latest);
+      }
+    }
+
+    function renderSidebar() {
+      return `
+        <aside class="sidebar ${state.sidebarOpen ? 'open' : ''}">
+          <div class="sidebar-header">
+            <div class="logo-mark">🛡️</div>
+            <div>
+              <p class="logo-title">HackStone</p>
+              <p class="logo-sub">FIM Dashboard</p>
+            </div>
+          </div>
+          <nav class="sidebar-nav">
+            ${navItems.map((item) => `
+              <button class="nav-item ${state.activeSection === item.id ? 'active' : ''}" data-section="${item.id}">
+                <span class="nav-icon">${item.icon}</span>
+                <span>${item.label}</span>
+              </button>
+            `).join('')}
+          </nav>
+        </aside>
+      `;
+    }
+
+    function render() {
+      const counters = countersFromEvents(state.events);
+      const changesOverTime = computeChangesOverTime(state.events);
+      const riskModel = computeRisk(state.events);
+      const latest = state.events[0];
+      const filteredEvents = state.activeSection === 'alertsConsole' ? getFilteredEvents() : null;
+      const activeLabel = navItems.find((n) => n.id === state.activeSection)?.label || 'Overview';
+
+      if (state.activeSection === 'alertsConsole') {
+        if (!filteredEvents?.length) {
+          state.selectedEvent = null;
+        } else if (!state.selectedEvent || !filteredEvents.some((evt) => evt._key === state.selectedEvent._key)) {
+          state.selectedEvent = filteredEvents[0];
+        }
+      }
+
+      const statusCopy = {
+        streaming: 'Live feed active',
+        ready: 'Loaded from API',
+        connecting: 'Connecting…',
+        disconnected: 'Stream disconnected',
+        error: 'API unreachable'
+      };
+
+      document.getElementById('root').innerHTML = `
+        <div class="app-shell">
+          ${renderSidebar()}
+          <div class="shell-main">
+            <header class="topbar">
+              <button class="hamburger" id="hamburger-btn" aria-label="Toggle navigation">
+                <span class="hamburger-line"></span>
+                <span class="hamburger-line"></span>
+                <span class="hamburger-line"></span>
+              </button>
+              <div>
+                <p class="eyebrow">${activeLabel}</p>
+                <h2 class="title-lg">${activeLabel}</h2>
+              </div>
+            </header>
+            <main class="main-content">
+              ${renderMain(state.activeSection, counters, statusCopy, changesOverTime, riskModel, latest, filteredEvents)}
+            </main>
+          </div>
+          <div class="sidebar-backdrop ${state.sidebarOpen ? 'visible' : ''}" id="sidebar-backdrop"></div>
+        </div>`;
 
       const rebuildBtn = document.getElementById('rebuild-btn');
       if (rebuildBtn) {
@@ -434,6 +933,68 @@
           }, 2000);
         });
       }
+
+      const navButtons = document.querySelectorAll('.nav-item');
+      navButtons.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const target = btn.getAttribute('data-section');
+          state.activeSection = target;
+          if (window.innerWidth < 768) state.sidebarOpen = false;
+          render();
+        });
+      });
+
+      const hamburger = document.getElementById('hamburger-btn');
+      if (hamburger) {
+        hamburger.addEventListener('click', () => {
+          state.sidebarOpen = !state.sidebarOpen;
+          render();
+        });
+      }
+
+      const backdrop = document.getElementById('sidebar-backdrop');
+      if (backdrop) {
+        backdrop.addEventListener('click', () => {
+          state.sidebarOpen = false;
+          render();
+        });
+      }
+
+      if (state.activeSection === 'alertsConsole') {
+        const searchInput = document.getElementById('events-search');
+        if (searchInput) {
+          searchInput.addEventListener('input', (e) => {
+            state.eventsFilter = e.target.value;
+            render();
+          });
+        }
+
+        const rangeSelects = document.querySelectorAll('.range-select');
+        rangeSelects.forEach((select) => {
+          select.addEventListener('change', (e) => {
+            state.timeRange = e.target.value;
+            render();
+          });
+        });
+
+        const refreshBtn = document.getElementById('events-refresh');
+        if (refreshBtn) {
+          refreshBtn.addEventListener('click', async () => {
+            await refreshEvents();
+            render();
+          });
+        }
+
+        const rows = document.querySelectorAll('.event-row-btn');
+        const currentList = filteredEvents || getFilteredEvents();
+        rows.forEach((row) => {
+          row.addEventListener('click', () => {
+            const idx = Number(row.getAttribute('data-event-index'));
+            state.selectedEvent = currentList[idx];
+            render();
+          });
+        });
+      }
     }
 
     async function loadInitial() {
@@ -447,6 +1008,16 @@
         state.status = 'error';
       }
       render();
+    }
+
+    async function refreshEvents() {
+      try {
+        const res = await fetch('/api/events');
+        const data = await res.json();
+        state.events = data.events || [];
+      } catch (err) {
+        state.status = 'error';
+      }
     }
 
     function startStream() {
