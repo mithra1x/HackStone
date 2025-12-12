@@ -1,0 +1,4 @@
+[
+  { "id": "host-123", "name": "Prod App Server", "env": "prod" },
+  { "id": "host-456", "name": "Dev Laptop", "env": "dev" }
+]
