@@ -1,0 +1,9 @@
+{
+  "hackstone_base_url": "http://localhost:3000",
+  "ingest_path": "/api/agent/events",
+  "agent_id": "dev-laptop-01",
+  "batch_size": 50,
+  "send_interval_seconds": 5,
+  "max_queue_size": 10000
+}
+

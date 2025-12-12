@@ -8,8 +8,11 @@ const WATCH_DIR = path.join(ROOT, 'watched');
 const DATA_DIR = path.join(ROOT, 'data');
 const LOG_DIR = path.join(ROOT, 'logs');
 const PUBLIC_DIR = path.join(ROOT, 'public');
+const CONFIG_DIR = path.join(ROOT, 'config');
+const STAGING_DIR = path.join(ROOT, 'staging');
 const BASELINE_FILE = path.join(DATA_DIR, 'baseline.json');
 const LOG_FILE = path.join(LOG_DIR, 'fim.log');
+const AGENTS_FILE = path.join(CONFIG_DIR, 'agents.json');
 
 const IGNORE_NAMES = new Set(['.DS_Store', 'baseline.json', 'fim.log']);
 const GOVERNANCE_KEYWORDS = /(personal|private|secret|pii)/i;
@@ -40,6 +43,8 @@ const IGNORE_RULES = [
 let baseline = {};
 let eventHistory = [];
 const sseClients = new Set();
+let agentRegistry = new Map();
+const MAX_BODY_SIZE = 1 * 1024 * 1024; // 1MB
 
 const MITRE_LOOKUP = {
   create: { id: 'T1587', name: 'Develop Capabilities' },
@@ -54,7 +59,7 @@ const AI_BASELINE = {
 };
 
 function ensureDirectories() {
-  [WATCH_DIR, DATA_DIR, LOG_DIR, PUBLIC_DIR].forEach((dir) => {
+  [WATCH_DIR, DATA_DIR, LOG_DIR, PUBLIC_DIR, CONFIG_DIR, STAGING_DIR].forEach((dir) => {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
@@ -120,6 +125,24 @@ async function walk(dir, collector = {}) {
   return collector;
 }
 
+async function loadAgentRegistry() {
+  agentRegistry = new Map();
+  if (!fs.existsSync(AGENTS_FILE)) return;
+  try {
+    const content = await fs.promises.readFile(AGENTS_FILE, 'utf-8');
+    const parsed = JSON.parse(content || '[]');
+    if (Array.isArray(parsed)) {
+      parsed.forEach((agent) => {
+        if (agent && agent.id) {
+          agentRegistry.set(agent.id, agent);
+        }
+      });
+    }
+  } catch (err) {
+    console.warn('Failed to load agent registry:', err.message);
+  }
+}
+
 async function loadBaseline() {
   try {
     const content = await fs.promises.readFile(BASELINE_FILE, 'utf-8');
@@ -163,6 +186,43 @@ async function purgeIgnoredBaselineEntries() {
 function logEvent(evt) {
   const line = JSON.stringify(evt);
   fs.appendFile(LOG_FILE, line + '\n', () => {});
+}
+
+function processAndBroadcastEvent(rawEvent, sourceMeta = {}) {
+  const kind = rawEvent.type || rawEvent.action;
+  const file = rawEvent.file || rawEvent.path;
+  if (!kind || !file) return null;
+
+  const timestamp = rawEvent.timestamp || new Date().toISOString();
+  const beforeHash = rawEvent.beforeHash ?? rawEvent.prev_hash ?? rawEvent.prevHash ?? null;
+  const afterHash = rawEvent.afterHash ?? rawEvent.hash ?? null;
+  const mitre = rawEvent.mitre || MITRE_LOOKUP[kind];
+  const severity = rawEvent.severity || (kind === 'delete' ? 'high' : kind === 'modify' ? 'medium' : 'info');
+  const message = rawEvent.message || describeEvent(kind, file, beforeHash, afterHash);
+  const aiAssessment = rawEvent.aiAssessment || buildAiAssessment(kind, file, beforeHash, afterHash);
+
+  const evt = {
+    id: rawEvent.id || crypto.randomUUID(),
+    type: kind,
+    file,
+    timestamp,
+    beforeHash,
+    afterHash,
+    mitre,
+    severity,
+    message,
+    aiAssessment,
+    source: sourceMeta.source || 'local',
+    agentId: sourceMeta.agentId || null,
+    user: rawEvent.user ?? null,
+    uid: rawEvent.uid ?? null,
+    gid: rawEvent.gid ?? null,
+    mode: rawEvent.mode ?? null,
+    extra: rawEvent.extra ?? rawEvent.metadata ?? null
+  };
+
+  pushEvent(evt);
+  return evt;
 }
 
 function buildAiAssessment(kind, rel, before, after) {
@@ -226,6 +286,49 @@ function broadcast(payload) {
   sseClients.forEach((res) => res.write(data));
 }
 
+function parseJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > MAX_BODY_SIZE) {
+        const err = new Error('Payload too large');
+        err.statusCode = 413;
+        reject(err);
+        req.destroy();
+      }
+    });
+    req.on('end', () => {
+      if (!body) {
+        const err = new Error('Empty body');
+        err.statusCode = 400;
+        reject(err);
+        return;
+      }
+      try {
+        const parsed = JSON.parse(body);
+        resolve(parsed);
+      } catch (err) {
+        err.statusCode = 400;
+        reject(err);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function validateAgentId(agentId) {
+  if (!agentId) return true;
+  if (!agentRegistry || agentRegistry.size === 0) return true;
+  return agentRegistry.has(agentId);
+}
+
+function validateAgentEvent(evt) {
+  if (!evt || typeof evt !== 'object') return false;
+  const required = ['path', 'action', 'timestamp'];
+  return required.every((field) => evt[field]);
+}
+
 async function handleChange(kind, filePath) {
   if (!filePath) return;
   const rel = path.relative(WATCH_DIR, filePath);
@@ -245,20 +348,20 @@ async function handleChange(kind, filePath) {
 
   await fs.promises.writeFile(BASELINE_FILE, JSON.stringify(baseline, null, 2));
 
-  const evt = {
-    id: crypto.randomUUID(),
-    type: kind,
-    file: rel,
-    timestamp,
-    beforeHash: before,
-    afterHash: after,
-    mitre,
-    severity: kind === 'delete' ? 'high' : kind === 'modify' ? 'medium' : 'info',
-    message: describeEvent(kind, rel, before, after),
-    aiAssessment: buildAiAssessment(kind, rel, before, after)
-  };
-
-  pushEvent(evt);
+  processAndBroadcastEvent(
+    {
+      type: kind,
+      file: rel,
+      timestamp,
+      beforeHash: before,
+      afterHash: after,
+      mitre,
+      severity: kind === 'delete' ? 'high' : kind === 'modify' ? 'medium' : 'info',
+      message: describeEvent(kind, rel, before, after),
+      aiAssessment: buildAiAssessment(kind, rel, before, after)
+    },
+    { source: 'local' }
+  );
 }
 
 function describeEvent(kind, relPath, before, after) {
@@ -350,6 +453,62 @@ async function requestHandler(req, res) {
     return;
   }
 
+  if (url.pathname === '/api/agent/events' && req.method === 'POST') {
+    try {
+      const payload = await parseJsonBody(req);
+      const events = Array.isArray(payload) ? payload : [payload];
+      if (!events.length) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'No events provided' }));
+        return;
+      }
+
+      let received = 0;
+      for (const evt of events) {
+        if (!validateAgentEvent(evt)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'Invalid event payload; path, action, and timestamp required' }));
+          return;
+        }
+
+        const agentId = evt.agent_id || evt.agentId || null;
+        if (!validateAgentId(agentId)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'Unknown agent_id' }));
+          return;
+        }
+
+        processAndBroadcastEvent(
+          {
+            type: evt.action,
+            file: evt.path,
+            timestamp: evt.timestamp,
+            beforeHash: evt.prev_hash ?? evt.prevHash ?? null,
+            afterHash: evt.hash ?? evt.afterHash ?? null,
+            mitre: evt.mitre,
+            severity: evt.severity,
+            message: evt.message,
+            aiAssessment: evt.aiAssessment,
+            extra: evt.extra,
+            user: evt.user,
+            uid: evt.uid,
+            gid: evt.gid,
+            mode: evt.mode
+          },
+          { source: 'agent', agentId }
+        );
+        received += 1;
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, received }));
+    } catch (err) {
+      res.writeHead(err.statusCode || 400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: err.message || 'Invalid request' }));
+    }
+    return;
+  }
+
   if (url.pathname === '/stream' && req.method === 'GET') {
     handleSSE(req, res);
     return;
@@ -364,6 +523,7 @@ async function requestHandler(req, res) {
 async function bootstrap() {
   ensureDirectories();
   await loadBaseline();
+  await loadAgentRegistry();
   setupWatcher();
 
   const server = http.createServer((req, res) => {
