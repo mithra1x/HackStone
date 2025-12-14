@@ -379,8 +379,10 @@ function validateAgentId(agentId) {
 
 function validateAgentEvent(evt) {
   if (!evt || typeof evt !== 'object') return false;
-  const required = ['path', 'action', 'timestamp'];
-  return required.every((field) => evt[field]);
+  const required = ['agent_id', 'path', 'action', 'timestamp'];
+  if (!required.every((field) => evt[field])) return false;
+  const allowedActions = new Set(['create', 'modify', 'delete']);
+  return allowedActions.has(evt.action);
 }
 
 async function handleChange(kind, filePath, baseDir) {
@@ -530,7 +532,13 @@ async function requestHandler(req, res) {
       for (const evt of events) {
         if (!validateAgentEvent(evt)) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, error: 'Invalid event payload; path, action, and timestamp required' }));
+          res.end(
+            JSON.stringify({
+              ok: false,
+              error:
+                'Invalid event payload; agent_id, path, action, and timestamp required; action must be one of create, modify, delete'
+            })
+          );
           return;
         }
 
