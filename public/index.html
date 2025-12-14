@@ -899,6 +899,15 @@
           ]
         : [];
 
+      if (evt?.quarantine) {
+        const q = evt.quarantine;
+        details.push(['Quarantine recommended', q.recommended ? 'Yes' : 'No']);
+        details.push(['Quarantine performed', q.performed ? 'Yes' : 'No']);
+        details.push(['Staged path', q.staged_path || '—']);
+        if (q.reason) details.push(['Quarantine reason', q.reason]);
+        if (q.error) details.push(['Quarantine error', q.error]);
+      }
+
       return `
         <div class="stack gap-4">
           <section class="card event-details">

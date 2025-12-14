@@ -91,6 +91,14 @@ function sanitizeBaselineId(id) {
   return String(id).replace(/[^A-Za-z0-9._-]/g, '_');
 }
 
+function sanitizeForFilename(name) {
+  if (!name) return 'unknown';
+  return String(name)
+    .replace(/[^A-Za-z0-9._-]/g, '_')
+    .replace(/_{2,}/g, '_')
+    .slice(0, 120);
+}
+
 function baselineFilePath(baselineId) {
   const safeId = baselineId === LOCAL_BASELINE_ID ? LOCAL_BASELINE_ID : sanitizeBaselineId(baselineId);
   return path.join(BASELINE_DIR, `${safeId}.json`);
@@ -563,6 +571,71 @@ function ensureMetadataObject(meta) {
   return normalized || emptyMetadata();
 }
 
+async function applyQuarantine(evt) {
+  const baseQuarantine = { recommended: false, performed: false, staged_path: null, error: null };
+  if (evt.severity !== 'critical') {
+    return { quarantine: baseQuarantine, message: null };
+  }
+
+  if (evt.source === 'agent') {
+    return {
+      quarantine: { ...baseQuarantine, recommended: true, performed: false, reason: 'remote_event' },
+      message: 'Quarantine recommended on agent host.'
+    };
+  }
+
+  const copyResult = await stageLocalFileCopy(evt);
+  return {
+    quarantine: {
+      ...baseQuarantine,
+      recommended: true,
+      performed: copyResult.performed,
+      staged_path: copyResult.staged_path,
+      error: copyResult.error
+    },
+    message: copyResult.error ? 'Quarantine copy attempted; review error details.' : 'Quarantine copy stored in staging.'
+  };
+}
+
+async function stageLocalFileCopy(evt) {
+  const defaultResult = { performed: false, staged_path: null, error: null, message: null };
+  const relPath = evt.file || evt.path;
+  if (!relPath) {
+    return { ...defaultResult, error: 'No file path available for quarantine copy' };
+  }
+
+  const absolute = path.isAbsolute(relPath) ? path.normalize(relPath) : path.join(ROOT, relPath);
+  const normalizedRoot = path.normalize(ROOT + path.sep);
+  if (!absolute.startsWith(normalizedRoot)) {
+    return { ...defaultResult, error: 'Source path resolved outside workspace; skipping copy' };
+  }
+
+  const timestamp = (evt.timestamp || new Date().toISOString()).replace(/[:.]/g, '-');
+  const safeSource = sanitizeForFilename(evt.agentId ? `agent-${evt.agentId}` : evt.source || 'local');
+  const safeBase = sanitizeForFilename(path.basename(relPath) || 'file');
+  const randomTag = crypto.createHash('md5').update(`${absolute}-${Date.now()}`).digest('hex').slice(0, 8);
+  const destName = `${timestamp}__${safeSource}__${safeBase}__${randomTag}.bin`;
+  const destPath = path.join(STAGING_DIR, destName);
+
+  try {
+    await fs.promises.access(absolute, fs.constants.R_OK);
+  } catch (err) {
+    const missingErr = err && err.code === 'ENOENT';
+    return {
+      ...defaultResult,
+      error: missingErr ? 'Source file missing; no snapshot available for quarantine copy' : err.message
+    };
+  }
+
+  try {
+    await fs.promises.copyFile(absolute, destPath);
+    const relStaged = path.relative(ROOT, destPath).replace(/\\/g, '/');
+    return { ...defaultResult, performed: true, staged_path: relStaged };
+  } catch (err) {
+    return { ...defaultResult, error: err.message };
+  }
+}
+
 function metadataHasValues(meta) {
   if (!meta) return false;
   return Object.values(meta).some((value) => value !== null);
@@ -623,6 +696,14 @@ async function processAndBroadcastEvent(rawEvent, sourceMeta = {}) {
     ctime: rawEvent.ctime ?? metadata.ctime ?? null,
     extra: rawEvent.extra ?? rawEvent.metadata ?? null
   };
+
+  const quarantineResult = await applyQuarantine(evt);
+  if (quarantineResult) {
+    evt.quarantine = quarantineResult.quarantine;
+    if (quarantineResult.message) {
+      evt.message = `${evt.message} ${quarantineResult.message}`.trim();
+    }
+  }
 
   await updateBaselineFromEvent(baselineId, file, kind, afterHash, metadata);
 
