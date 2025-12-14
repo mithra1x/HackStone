@@ -65,27 +65,24 @@ const SUPPRESSION_STALE_MS = 5 * 60 * 1000;
 const suppressionTracker = new Map();
 let metadataRules = [];
 const EVENT_BUFFER_LIMIT = 500;
-const STARTUP_LOG_LOAD_LIMIT = 200;
 
 const DEFAULT_METADATA_RULES = [
   {
-    description: 'Credentials / secrets',
+    description: 'Credentials and secrets',
     match: {
-      path_keywords: ['cred', 'credential', 'secret', 'password', 'token', 'apikey', 'api_key', 'private_key'],
-      path_patterns: ['.aws/credentials', '.env', 'id_rsa', 'id_ed25519', '/etc/shadow']
+      path_keywords: [
+        'secret',
+        'password',
+        'passwd',
+        'credential',
+        'token',
+        'apikey',
+        'api_key',
+        'private_key'
+      ]
     },
     severity: 'critical',
-    tags: ['credentials', 'sensitive'],
-    mitre: { tactic: 'Credential Access', technique_id: 'T1552', technique: 'Unsecured Credentials' }
-  },
-  {
-    description: 'Script execution surfaces',
-    match: {
-      extensions: ['.sh', '.ps1', '.bat', '.cmd', '.py']
-    },
-    severity: 'high',
-    tags: ['script'],
-    mitre: { tactic: 'Execution', technique_id: 'T1059', technique: 'Command and Scripting Interpreter' }
+    tags: ['credentials', 'sensitive']
   }
 ];
 
@@ -458,72 +455,6 @@ function logEvent(evt) {
   fs.appendFile(LOG_FILE, line + '\n', () => {});
 }
 
-function readLastLines(filePath, limit) {
-  const stats = fs.statSync(filePath);
-  if (!stats || stats.size === 0) return [];
-
-  const targetLines = Math.max(limit, 0);
-  const chunkSize = 64 * 1024;
-  let position = Math.max(stats.size - chunkSize, 0);
-  let buffer = '';
-  let lines = [];
-  const fd = fs.openSync(filePath, 'r');
-
-  try {
-    while (lines.length <= targetLines && position >= 0) {
-      const size = Math.min(chunkSize, stats.size - position);
-      const chunk = Buffer.alloc(size);
-      fs.readSync(fd, chunk, 0, size, position);
-      buffer = chunk.toString('utf-8') + buffer;
-      lines = buffer.split(/\r?\n/);
-      if (position === 0) break;
-      position = Math.max(position - chunkSize, 0);
-    }
-  } finally {
-    fs.closeSync(fd);
-  }
-
-  return lines.filter(Boolean).slice(-targetLines);
-}
-
-function loadRecentEventsFromLog(limit = STARTUP_LOG_LOAD_LIMIT) {
-  const logPath = path.join(ROOT, 'logs', 'fim.log');
-  const exists = fs.existsSync(logPath);
-  let readLinesCount = 0;
-  let loadedEvents = 0;
-
-  if (!exists) {
-    console.log(`replay: logPath=${logPath} exists=false readLines=0 loadedEvents=0`);
-    return;
-  }
-
-  try {
-    const content = fs.readFileSync(logPath, 'utf-8');
-    const lines = content.split(/\r?\n/).filter(Boolean);
-    const recent = lines.slice(-Math.max(limit, 0));
-    readLinesCount = recent.length;
-
-    for (const line of recent) {
-      try {
-        const parsed = JSON.parse(line);
-        if (parsed && typeof parsed === 'object') {
-          const normalized = normalizeEventShape(parsed);
-          storeEventInHistory(normalized, { skipLog: true, skipBroadcast: true });
-          loadedEvents += 1;
-        }
-      } catch (err) {
-        // Skip invalid JSON lines silently to avoid startup failures
-      }
-    }
-    console.log(
-      `replay: logPath=${logPath} exists=${exists} readLines=${readLinesCount} loadedEvents=${loadedEvents}`
-    );
-  } catch (err) {
-    console.warn('Failed to load recent events from log:', err.message);
-    console.log(`replay: logPath=${logPath} exists=${exists} readLines=${readLinesCount} loadedEvents=${loadedEvents}`);
-  }
-}
-
 function suppressionKey(evt) {
   return [evt.source || 'local', evt.agentId || 'null', evt.file, evt.type || evt.action || 'unknown'].join('|');
 }
@@ -793,20 +724,15 @@ async function stageLocalFileCopy(evt) {
   }
 
   const timestamp = (evt.timestamp || new Date().toISOString()).replace(/[:.]/g, '-');
-  const safeSource = sanitizeForFilename(evt.agentId ? `agent-${evt.agentId}` : evt.source || 'local');
   const safeBase = sanitizeForFilename(path.basename(relPath) || 'file');
-  const randomTag = crypto.createHash('md5').update(`${absolute}-${Date.now()}`).digest('hex').slice(0, 8);
-  const destName = `${timestamp}__${safeSource}__${safeBase}__${randomTag}.bin`;
+  const destName = `${timestamp}__local__${safeBase}`;
   const destPath = path.join(STAGING_DIR, destName);
 
   try {
     await fs.promises.access(absolute, fs.constants.R_OK);
   } catch (err) {
     const missingErr = err && err.code === 'ENOENT';
-    return {
-      ...defaultResult,
-      error: missingErr ? 'Source file missing; no snapshot available for quarantine copy' : err.message
-    };
+    return { ...defaultResult, error: missingErr ? 'file not found' : err.message };
   }
 
   try {
@@ -1379,7 +1305,6 @@ async function requestHandler(req, res) {
 
 async function bootstrap() {
   ensureDirectories();
-  loadRecentEventsFromLog();
   loadServerConfig();
   loadMetadataRules();
   await loadBaseline();
