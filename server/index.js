@@ -58,6 +58,10 @@ const processedEventIds = new Map(); // event_id -> timestamp
 const agentEventBuffer = [];
 const MAX_AGENT_BUFFER_SIZE = 2000;
 let agentBufferProcessing = false;
+const SUPPRESS_WINDOW_SECONDS = 10;
+const SUPPRESS_THRESHOLD = 5;
+const SUPPRESSION_STALE_MS = 5 * 60 * 1000;
+const suppressionTracker = new Map();
 
 const MITRE_LOOKUP = {
   create: { id: 'T1587', name: 'Develop Capabilities' },
@@ -380,6 +384,84 @@ function logEvent(evt) {
   fs.appendFile(LOG_FILE, line + '\n', () => {});
 }
 
+function suppressionKey(evt) {
+  return [evt.source || 'local', evt.agentId || 'null', evt.file, evt.type || evt.action || 'unknown'].join('|');
+}
+
+function cleanupSuppressionTracker(now = Date.now()) {
+  for (const [key, state] of suppressionTracker.entries()) {
+    if (now - state.lastSeenMs > SUPPRESSION_STALE_MS) {
+      suppressionTracker.delete(key);
+    }
+  }
+}
+
+function emitSummaryEvent(evt, state) {
+  const windowStart = new Date(state.windowStartMs).toISOString();
+  const windowEnd = new Date(state.lastSeenMs).toISOString();
+  const sourceLabel = evt.source === 'agent' ? `agent ${evt.agentId || 'unknown'}` : 'local watcher';
+
+  return {
+    ...evt,
+    id: crypto.randomUUID(),
+    timestamp: windowEnd,
+    is_summary: true,
+    summary: {
+      suppressed: state.suppressedCount,
+      total_in_window: state.count,
+      window_seconds: SUPPRESS_WINDOW_SECONDS,
+      window_start: windowStart,
+      window_end: windowEnd
+    },
+    message: `Suppressed ${state.suppressedCount} repeated ${evt.type} events for ${evt.file} (${sourceLabel}) in ${SUPPRESS_WINDOW_SECONDS}s`,
+    beforeHash: null,
+    afterHash: null,
+    aiAssessment: evt.aiAssessment,
+    severity: evt.severity || 'info'
+  };
+}
+
+function applyBurstSuppression(evt, nowMs = Date.now()) {
+  cleanupSuppressionTracker(nowMs);
+  const key = suppressionKey(evt);
+  const windowMs = SUPPRESS_WINDOW_SECONDS * 1000;
+  let summaryEvent = null;
+
+  if (!suppressionTracker.has(key)) {
+    suppressionTracker.set(key, {
+      windowStartMs: nowMs,
+      lastSeenMs: nowMs,
+      count: 1,
+      suppressedCount: 0
+    });
+    return { suppressed: false, summaryEvent: null };
+  }
+
+  const state = suppressionTracker.get(key);
+  if (nowMs - state.windowStartMs > windowMs) {
+    if (state.suppressedCount > 0) {
+      summaryEvent = emitSummaryEvent(evt, state);
+    }
+    state.windowStartMs = nowMs;
+    state.lastSeenMs = nowMs;
+    state.count = 1;
+    state.suppressedCount = 0;
+    suppressionTracker.set(key, state);
+    return { suppressed: false, summaryEvent };
+  }
+
+  state.lastSeenMs = nowMs;
+  state.count += 1;
+  if (state.count > SUPPRESS_THRESHOLD) {
+    state.suppressedCount += 1;
+    suppressionTracker.set(key, state);
+    return { suppressed: true, summaryEvent: null };
+  }
+
+  suppressionTracker.set(key, state);
+  return { suppressed: false, summaryEvent: null };
+}
+
 function normalizeMode(mode) {
   if (mode === undefined || mode === null) return null;
   const numeric = typeof mode === 'string' ? parseInt(mode, 8) : Number(mode);
@@ -543,6 +625,14 @@ async function processAndBroadcastEvent(rawEvent, sourceMeta = {}) {
   };
 
   await updateBaselineFromEvent(baselineId, file, kind, afterHash, metadata);
+
+  const suppression = applyBurstSuppression(evt);
+  if (suppression.summaryEvent) {
+    pushEvent(suppression.summaryEvent);
+  }
+  if (suppression.suppressed) {
+    return { ...evt, suppressed: true };
+  }
 
   pushEvent(evt);
   return evt;
