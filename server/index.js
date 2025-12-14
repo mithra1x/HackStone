@@ -4,12 +4,13 @@ const path = require('path');
 const crypto = require('crypto');
 
 const ROOT = path.resolve(__dirname, '..');
-const WATCH_DIR = path.join(ROOT, 'watched');
+const DEFAULT_WATCH_DIR = path.join(ROOT, 'watched');
 const DATA_DIR = path.join(ROOT, 'data');
 const LOG_DIR = path.join(ROOT, 'logs');
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const CONFIG_DIR = path.join(ROOT, 'config');
 const STAGING_DIR = path.join(ROOT, 'staging');
+const CONFIG_FILE = path.join(CONFIG_DIR, 'server_config.json');
 const BASELINE_FILE = path.join(DATA_DIR, 'baseline.json');
 const LOG_FILE = path.join(LOG_DIR, 'fim.log');
 const AGENTS_FILE = path.join(CONFIG_DIR, 'agents.json');
@@ -44,6 +45,8 @@ let baseline = {};
 let eventHistory = [];
 const sseClients = new Set();
 let agentRegistry = new Map();
+let watchPaths = [];
+let ignorePatternRegexes = [];
 const MAX_BODY_SIZE = 1 * 1024 * 1024; // 1MB
 
 const MITRE_LOOKUP = {
@@ -59,7 +62,7 @@ const AI_BASELINE = {
 };
 
 function ensureDirectories() {
-  [WATCH_DIR, DATA_DIR, LOG_DIR, PUBLIC_DIR, CONFIG_DIR, STAGING_DIR].forEach((dir) => {
+  [DEFAULT_WATCH_DIR, DATA_DIR, LOG_DIR, PUBLIC_DIR, CONFIG_DIR, STAGING_DIR].forEach((dir) => {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
@@ -70,6 +73,47 @@ function ensureDirectories() {
   if (!fs.existsSync(LOG_FILE)) {
     fs.writeFileSync(LOG_FILE, '');
   }
+}
+
+function loadServerConfig() {
+  const defaults = {
+    watch_paths: ['./watched'],
+    ignore_patterns: ['*.swp', '*.swo', '*~', '.DS_Store']
+  };
+
+  if (!fs.existsSync(CONFIG_FILE)) {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(defaults, null, 2));
+    console.log('Created default config/server_config.json');
+  }
+
+  let parsed = defaults;
+  try {
+    const content = fs.readFileSync(CONFIG_FILE, 'utf-8');
+    parsed = JSON.parse(content || '{}');
+  } catch (err) {
+    console.error('Failed to parse config/server_config.json, falling back to defaults:', err.message);
+    parsed = defaults;
+  }
+
+  const rawPaths = Array.isArray(parsed.watch_paths) ? parsed.watch_paths : defaults.watch_paths;
+  watchPaths = rawPaths
+    .map((p) => (p.startsWith('/') ? p : path.resolve(ROOT, p)))
+    .filter(Boolean);
+  if (!watchPaths.length) {
+    watchPaths = defaults.watch_paths.map((p) => path.resolve(ROOT, p));
+  }
+
+  watchPaths.forEach((dir) => {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+  });
+
+  const patterns = Array.isArray(parsed.ignore_patterns) ? parsed.ignore_patterns : defaults.ignore_patterns;
+  ignorePatternRegexes = patterns.map(globToRegex);
+
+  console.log('Watching paths:', watchPaths.join(', '));
+  console.log('Ignore patterns:', patterns.join(', '));
 }
 
 function globToRegex(glob) {
@@ -95,6 +139,7 @@ function isIgnored(filePath) {
   if (IGNORE_NAMES.has(name)) return true;
   if (GOVERNANCE_KEYWORDS.test(filePath)) return true;
   if (IGNORE_RULES.some((rule) => rule.ignore && matchesIgnoreRule(rule, name))) return true;
+  if (ignorePatternRegexes.some((regex) => regex.test(name))) return true;
   return false;
 }
 
@@ -117,7 +162,7 @@ async function walk(dir, collector = {}) {
     if (entry.isDirectory()) {
       await walk(fullPath, collector);
     } else if (entry.isFile()) {
-      const rel = path.relative(WATCH_DIR, fullPath);
+      const rel = path.relative(ROOT, fullPath);
       const hash = await hashFile(fullPath);
       collector[rel] = { hash, timestamp: new Date().toISOString() };
     }
@@ -151,13 +196,22 @@ async function loadBaseline() {
     baseline = {};
   }
   await purgeIgnoredBaselineEntries();
-  if (!Object.keys(baseline).length) {
+  const allWithinWatchPaths = Object.keys(baseline).every((rel) => {
+    const absolute = path.join(ROOT, rel);
+    return watchPaths.some((dir) => !path.relative(dir, absolute).startsWith('..'));
+  });
+  if (!Object.keys(baseline).length || !allWithinWatchPaths) {
     await rebuildBaseline();
   }
 }
 
 async function rebuildBaseline() {
-  baseline = await walk(WATCH_DIR, {});
+  baseline = {};
+  for (const dir of watchPaths) {
+    if (fs.existsSync(dir)) {
+      await walk(dir, baseline);
+    }
+  }
   await fs.promises.writeFile(BASELINE_FILE, JSON.stringify(baseline, null, 2));
   logEvent({
     id: crypto.randomUUID(),
@@ -172,7 +226,7 @@ async function rebuildBaseline() {
 async function purgeIgnoredBaselineEntries() {
   let changed = false;
   for (const rel of Object.keys(baseline)) {
-    const absolute = path.join(WATCH_DIR, rel);
+    const absolute = path.join(ROOT, rel);
     if (isIgnored(absolute)) {
       delete baseline[rel];
       changed = true;
@@ -329,9 +383,11 @@ function validateAgentEvent(evt) {
   return required.every((field) => evt[field]);
 }
 
-async function handleChange(kind, filePath) {
+async function handleChange(kind, filePath, baseDir) {
   if (!filePath) return;
-  const rel = path.relative(WATCH_DIR, filePath);
+  const relWithinBase = baseDir ? path.relative(baseDir, filePath) : path.relative(ROOT, filePath);
+  if (relWithinBase.startsWith('..')) return;
+  const rel = path.relative(ROOT, filePath);
   // Drop ignored paths before hashing, diffing, or emitting events
   if (rel.startsWith('..') || isIgnored(filePath)) return;
   const timestamp = new Date().toISOString();
@@ -382,24 +438,26 @@ function describeEvent(kind, relPath, before, after) {
 
 function setupWatcher() {
   try {
-    const watcher = fs.watch(WATCH_DIR, { recursive: true }, async (eventType, filename) => {
-      if (!filename) return;
-      const target = path.join(WATCH_DIR, filename);
-      const rel = path.relative(WATCH_DIR, target);
-      if (eventType === 'rename') {
-        if (fs.existsSync(target)) {
-          await handleChange(baseline[rel] ? 'modify' : 'create', target);
-        } else {
-          await handleChange('delete', target);
+    for (const dir of watchPaths) {
+      const watcher = fs.watch(dir, { recursive: true }, async (eventType, filename) => {
+        if (!filename) return;
+        const target = path.join(dir, filename);
+        const rel = path.relative(ROOT, target);
+        if (eventType === 'rename') {
+          if (fs.existsSync(target)) {
+            await handleChange(baseline[rel] ? 'modify' : 'create', target, dir);
+          } else {
+            await handleChange('delete', target, dir);
+          }
+        } else if (eventType === 'change') {
+          await handleChange('modify', target, dir);
         }
-      } else if (eventType === 'change') {
-        await handleChange('modify', target);
-      }
-    });
-    watcher.on('error', (err) => {
-      console.error('Watcher error:', err.message);
-    });
-    console.log(`Watching ${WATCH_DIR}`);
+      });
+      watcher.on('error', (err) => {
+        console.error('Watcher error:', err.message);
+      });
+      console.log(`Watching ${dir}`);
+    }
   } catch (err) {
     console.error('Failed to start watcher', err);
   }
@@ -449,7 +507,12 @@ async function requestHandler(req, res) {
 
   if (url.pathname === '/api/config' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ watchDir: WATCH_DIR, governanceFilter: GOVERNANCE_KEYWORDS.source }));
+    const primaryWatchDir = watchPaths[0] || DEFAULT_WATCH_DIR;
+    res.end(JSON.stringify({
+      watchDir: primaryWatchDir,
+      watchDirs: watchPaths,
+      governanceFilter: GOVERNANCE_KEYWORDS.source
+    }));
     return;
   }
 
@@ -522,6 +585,7 @@ async function requestHandler(req, res) {
 
 async function bootstrap() {
   ensureDirectories();
+  loadServerConfig();
   await loadBaseline();
   await loadAgentRegistry();
   setupWatcher();

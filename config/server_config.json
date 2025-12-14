@@ -1,0 +1,9 @@
+{
+  "watch_paths": ["./watched"],
+  "ignore_patterns": [
+    "*.swp",
+    "*.swo",
+    "*~",
+    ".DS_Store"
+  ]
+}
