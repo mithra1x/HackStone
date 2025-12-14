@@ -458,18 +458,48 @@ function logEvent(evt) {
   fs.appendFile(LOG_FILE, line + '\n', () => {});
 }
 
-function loadRecentEventsFromLog(limit = STARTUP_LOG_LOAD_LIMIT) {
-  if (!fs.existsSync(LOG_FILE)) return;
+function readLastLines(filePath, limit) {
+  const stats = fs.statSync(filePath);
+  if (!stats || stats.size === 0) return [];
+
+  const targetLines = Math.max(limit, 0);
+  const chunkSize = 64 * 1024;
+  let position = Math.max(stats.size - chunkSize, 0);
+  let buffer = '';
+  let lines = [];
+  const fd = fs.openSync(filePath, 'r');
+
   try {
-    const content = fs.readFileSync(LOG_FILE, 'utf-8');
-    if (!content) return;
-    const lines = content.split(/\r?\n/).filter(Boolean);
-    const recent = lines.slice(-Math.max(limit, 0));
-    for (const line of recent) {
+    while (lines.length <= targetLines && position >= 0) {
+      const size = Math.min(chunkSize, stats.size - position);
+      const chunk = Buffer.alloc(size);
+      fs.readSync(fd, chunk, 0, size, position);
+      buffer = chunk.toString('utf-8') + buffer;
+      lines = buffer.split(/\r?\n/);
+      if (position === 0) break;
+      position = Math.max(position - chunkSize, 0);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  return lines.filter(Boolean).slice(-targetLines);
+}
+
+function loadRecentEventsFromLog(limit = STARTUP_LOG_LOAD_LIMIT) {
+  const logPath = path.resolve(LOG_FILE);
+  if (!fs.existsSync(logPath)) return;
+  try {
+    const lines = readLastLines(logPath, limit);
+    if (!lines.length) return;
+    for (const line of lines) {
       try {
         const parsed = JSON.parse(line);
         if (parsed && typeof parsed === 'object') {
-          storeEventInHistory(parsed, { skipLog: true, skipBroadcast: true });
+          const normalized = normalizeEventShape(parsed);
+          if (normalized.path || normalized.file) {
+            storeEventInHistory(normalized, { skipLog: true, skipBroadcast: true });
+          }
         }
       } catch (err) {
         // Skip invalid JSON lines silently to avoid startup failures
