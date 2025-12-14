@@ -487,26 +487,40 @@ function readLastLines(filePath, limit) {
 }
 
 function loadRecentEventsFromLog(limit = STARTUP_LOG_LOAD_LIMIT) {
-  const logPath = path.resolve(LOG_FILE);
-  if (!fs.existsSync(logPath)) return;
+  const logPath = path.join(ROOT, 'logs', 'fim.log');
+  const exists = fs.existsSync(logPath);
+  let readLinesCount = 0;
+  let loadedEvents = 0;
+
+  if (!exists) {
+    console.log(`replay: logPath=${logPath} exists=false readLines=0 loadedEvents=0`);
+    return;
+  }
+
   try {
-    const lines = readLastLines(logPath, limit);
-    if (!lines.length) return;
-    for (const line of lines) {
+    const content = fs.readFileSync(logPath, 'utf-8');
+    const lines = content.split(/\r?\n/).filter(Boolean);
+    const recent = lines.slice(-Math.max(limit, 0));
+    readLinesCount = recent.length;
+
+    for (const line of recent) {
       try {
         const parsed = JSON.parse(line);
         if (parsed && typeof parsed === 'object') {
           const normalized = normalizeEventShape(parsed);
-          if (normalized.path || normalized.file) {
-            storeEventInHistory(normalized, { skipLog: true, skipBroadcast: true });
-          }
+          storeEventInHistory(normalized, { skipLog: true, skipBroadcast: true });
+          loadedEvents += 1;
         }
       } catch (err) {
         // Skip invalid JSON lines silently to avoid startup failures
       }
     }
+    console.log(
+      `replay: logPath=${logPath} exists=${exists} readLines=${readLinesCount} loadedEvents=${loadedEvents}`
+    );
   } catch (err) {
     console.warn('Failed to load recent events from log:', err.message);
+    console.log(`replay: logPath=${logPath} exists=${exists} readLines=${readLinesCount} loadedEvents=${loadedEvents}`);
   }
 }
 
