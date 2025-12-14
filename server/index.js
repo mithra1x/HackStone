@@ -48,6 +48,7 @@ const sseClients = new Set();
 let agentRegistry = new Map();
 let watchPaths = [];
 let ignorePatternRegexes = [];
+const lastKnownMetaByPath = new Map();
 const MAX_BODY_SIZE = 1 * 1024 * 1024; // 1MB
 
 const MITRE_LOOKUP = {
@@ -165,7 +166,9 @@ async function walk(dir, collector = {}) {
     } else if (entry.isFile()) {
       const rel = path.relative(ROOT, fullPath);
       const hash = await hashFile(fullPath);
-      collector[rel] = { hash, timestamp: new Date().toISOString() };
+      const { metadata } = await collectFilesystemMetadata(fullPath);
+      collector[rel] = { hash, timestamp: new Date().toISOString(), metadata };
+      lastKnownMetaByPath.set(rel, metadata);
     }
   }
   return collector;
@@ -301,29 +304,47 @@ function normalizeMetadata(rawEvent = {}) {
   return { uid, gid, user, mode, size, mtime, ctime };
 }
 
+function emptyMetadata() {
+  return {
+    uid: null,
+    gid: null,
+    user: null,
+    mode: null,
+    size: null,
+    mtime: null,
+    ctime: null
+  };
+}
+
 async function collectFilesystemMetadata(filePath) {
   try {
     const stat = await fs.promises.lstat(filePath);
     return {
-      uid: stat.uid ?? null,
-      gid: stat.gid ?? null,
-      user: lookupUser(stat.uid),
-      mode: normalizeMode(stat.mode),
-      size: stat.size ?? null,
-      mtime: normalizeTimestamp(stat.mtime),
-      ctime: normalizeTimestamp(stat.ctime)
+      metadata: {
+        uid: stat.uid ?? null,
+        gid: stat.gid ?? null,
+        user: lookupUser(stat.uid),
+        mode: normalizeMode(stat.mode),
+        size: stat.size ?? null,
+        mtime: normalizeTimestamp(stat.mtime),
+        ctime: normalizeTimestamp(stat.ctime)
+      },
+      found: true
     };
   } catch (err) {
-    return {
-      uid: null,
-      gid: null,
-      user: null,
-      mode: null,
-      size: null,
-      mtime: null,
-      ctime: null
-    };
+    return { metadata: emptyMetadata(), found: false };
   }
+}
+
+function metadataFromBaseline(entry) {
+  if (!entry || !entry.metadata) return null;
+  return normalizeMetadata({ metadata: entry.metadata });
+}
+
+function ensureMetadataObject(meta) {
+  if (!meta) return emptyMetadata();
+  const normalized = normalizeMetadata({ metadata: meta });
+  return normalized || emptyMetadata();
 }
 
 function processAndBroadcastEvent(rawEvent, sourceMeta = {}) {
@@ -484,17 +505,31 @@ async function handleChange(kind, filePath, baseDir) {
   if (rel.startsWith('..') || isIgnored(filePath)) return;
   const timestamp = new Date().toISOString();
   const mitre = MITRE_LOOKUP[kind];
-  let before = baseline[rel]?.hash || null;
+  const baselineEntry = baseline[rel];
+  let before = baselineEntry?.hash || null;
   let after = null;
 
+  const metadataResult = await collectFilesystemMetadata(filePath);
+  let metadata = metadataResult.metadata;
+
   if (kind === 'delete') {
+    const cached = lastKnownMetaByPath.get(rel);
+    const baselineMeta = metadataFromBaseline(baselineEntry);
+    if (!metadataResult.found) {
+      metadata = ensureMetadataObject(cached || baselineMeta || metadata);
+    } else {
+      metadata = ensureMetadataObject(metadata);
+      lastKnownMetaByPath.set(rel, metadata);
+    }
     delete baseline[rel];
   } else if (fs.existsSync(filePath)) {
     after = await hashFile(filePath);
-    baseline[rel] = { hash: after, timestamp };
+    metadata = ensureMetadataObject(metadata);
+    baseline[rel] = { hash: after, timestamp, metadata };
+    lastKnownMetaByPath.set(rel, metadata);
+  } else {
+    metadata = ensureMetadataObject(metadata);
   }
-
-  const metadata = await collectFilesystemMetadata(filePath);
 
   await fs.promises.writeFile(BASELINE_FILE, JSON.stringify(baseline, null, 2));
 
