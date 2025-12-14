@@ -890,6 +890,7 @@
             ['SHA-256', evt.sha256 || evt.hash || evt.afterHash || '—'],
             ['MD5', evt.md5 || '—'],
             ['Classification / tags', evt.data_classification || evt.tags?.join?.(', ') || '—'],
+            ['Rule matches', evt.rule_matches?.length ? evt.rule_matches.join(', ') : '—'],
             ['MITRE mapping', mitreValue],
             ['AI risk score', ai ? `${ai.label} · ${ai.score}` : '—'],
             ['Previous hash', evt.beforeHash || '—'],
