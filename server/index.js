@@ -7,12 +7,14 @@ const os = require('os');
 const ROOT = path.resolve(__dirname, '..');
 const DEFAULT_WATCH_DIR = path.join(ROOT, 'watched');
 const DATA_DIR = path.join(ROOT, 'data');
+const BASELINE_DIR = path.join(DATA_DIR, 'baseline');
 const LOG_DIR = path.join(ROOT, 'logs');
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const CONFIG_DIR = path.join(ROOT, 'config');
 const STAGING_DIR = path.join(ROOT, 'staging');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'server_config.json');
-const BASELINE_FILE = path.join(DATA_DIR, 'baseline.json');
+const LEGACY_BASELINE_FILE = path.join(DATA_DIR, 'baseline.json');
+const LOCAL_BASELINE_ID = 'local';
 const LOG_FILE = path.join(LOG_DIR, 'fim.log');
 const AGENTS_FILE = path.join(CONFIG_DIR, 'agents.json');
 
@@ -42,7 +44,7 @@ const IGNORE_RULES = [
   regexes: (rule.patterns || []).map(globToRegex)
 }));
 
-let baseline = {};
+let baselines = new Map();
 let eventHistory = [];
 const sseClients = new Set();
 let agentRegistry = new Map();
@@ -64,16 +66,50 @@ const AI_BASELINE = {
 };
 
 function ensureDirectories() {
-  [DEFAULT_WATCH_DIR, DATA_DIR, LOG_DIR, PUBLIC_DIR, CONFIG_DIR, STAGING_DIR].forEach((dir) => {
+  [DEFAULT_WATCH_DIR, DATA_DIR, BASELINE_DIR, LOG_DIR, PUBLIC_DIR, CONFIG_DIR, STAGING_DIR].forEach((dir) => {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
   });
-  if (!fs.existsSync(BASELINE_FILE)) {
-    fs.writeFileSync(BASELINE_FILE, JSON.stringify({}, null, 2));
-  }
   if (!fs.existsSync(LOG_FILE)) {
     fs.writeFileSync(LOG_FILE, '');
+  }
+}
+
+function sanitizeBaselineId(id) {
+  if (!id) return 'unknown';
+  return String(id).replace(/[^A-Za-z0-9._-]/g, '_');
+}
+
+function baselineFilePath(baselineId) {
+  const safeId = baselineId === LOCAL_BASELINE_ID ? LOCAL_BASELINE_ID : sanitizeBaselineId(baselineId);
+  return path.join(BASELINE_DIR, `${safeId}.json`);
+}
+
+function backupCorruptBaseline(filePath) {
+  try {
+    const backupPath = `${filePath}.bad-${Date.now()}`;
+    fs.renameSync(filePath, backupPath);
+    console.error(`Baseline file ${filePath} was corrupted. Backed up to ${backupPath}`);
+  } catch (err) {
+    console.error(`Failed to back up corrupt baseline file ${filePath}:`, err.message);
+  }
+}
+
+async function ensureBaselineStorage() {
+  ensureDirectories();
+  const localPath = baselineFilePath(LOCAL_BASELINE_ID);
+  if (!fs.existsSync(localPath)) {
+    if (fs.existsSync(LEGACY_BASELINE_FILE)) {
+      try {
+        fs.copyFileSync(LEGACY_BASELINE_FILE, localPath);
+      } catch (err) {
+        console.warn('Failed to migrate legacy baseline file, starting fresh:', err.message);
+        fs.writeFileSync(localPath, JSON.stringify({}, null, 2));
+      }
+    } else {
+      fs.writeFileSync(localPath, JSON.stringify({}, null, 2));
+    }
   }
 }
 
@@ -155,7 +191,7 @@ async function hashFile(filePath) {
   });
 }
 
-async function walk(dir, collector = {}) {
+async function walk(dir, collector = {}, baselineId = LOCAL_BASELINE_ID) {
   const entries = await fs.promises.readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
@@ -167,8 +203,8 @@ async function walk(dir, collector = {}) {
       const rel = path.relative(ROOT, fullPath);
       const hash = await hashFile(fullPath);
       const { metadata } = await collectFilesystemMetadata(fullPath);
-      collector[rel] = { hash, timestamp: new Date().toISOString(), metadata };
-      lastKnownMetaByPath.set(rel, metadata);
+      collector[rel] = { hash, updated_at: new Date().toISOString(), metadata };
+      setLastKnownMetadata(baselineId, rel, metadata);
     }
   }
   return collector;
@@ -192,31 +228,97 @@ async function loadAgentRegistry() {
   }
 }
 
-async function loadBaseline() {
+function normalizeBaselineData(data = {}) {
+  const normalized = {};
+  for (const [rel, entry] of Object.entries(data)) {
+    if (!entry) continue;
+    const hash = entry.hash || entry.afterHash || null;
+    const updated_at = entry.updated_at || entry.timestamp || null;
+    const metadata = entry.metadata ? ensureMetadataObject(entry.metadata) : null;
+    normalized[rel] = { hash, metadata, updated_at };
+  }
+  return normalized;
+}
+
+function baselineMetaKey(baselineId, rel) {
+  return `${baselineId}:${rel}`;
+}
+
+function setLastKnownMetadata(baselineId, rel, metadata) {
+  if (!rel) return;
+  lastKnownMetaByPath.set(baselineMetaKey(baselineId, rel), metadata);
+}
+
+function getLastKnownMetadata(baselineId, rel) {
+  return lastKnownMetaByPath.get(baselineMetaKey(baselineId, rel)) || null;
+}
+
+async function loadBaseline(baselineId = LOCAL_BASELINE_ID) {
+  await ensureBaselineStorage();
+  const filePath = baselineFilePath(baselineId);
+  let data = {};
   try {
-    const content = await fs.promises.readFile(BASELINE_FILE, 'utf-8');
-    baseline = JSON.parse(content || '{}');
+    if (!fs.existsSync(filePath)) {
+      await fs.promises.writeFile(filePath, JSON.stringify({}, null, 2));
+    }
+    const content = await fs.promises.readFile(filePath, 'utf-8');
+    data = JSON.parse(content || '{}');
   } catch (err) {
-    baseline = {};
+    console.error(`Failed to parse baseline file for ${baselineId}:`, err.message);
+    backupCorruptBaseline(filePath);
+    data = {};
   }
-  await purgeIgnoredBaselineEntries();
-  const allWithinWatchPaths = Object.keys(baseline).every((rel) => {
-    const absolute = path.join(ROOT, rel);
-    return watchPaths.some((dir) => !path.relative(dir, absolute).startsWith('..'));
-  });
-  if (!Object.keys(baseline).length || !allWithinWatchPaths) {
-    await rebuildBaseline();
+  const normalized = normalizeBaselineData(data);
+  baselines.set(baselineId, normalized);
+  for (const [rel, entry] of Object.entries(normalized)) {
+    if (entry?.metadata) {
+      setLastKnownMetadata(baselineId, rel, ensureMetadataObject(entry.metadata));
+    }
   }
+
+  if (baselineId === LOCAL_BASELINE_ID) {
+    await purgeIgnoredBaselineEntries(baselineId);
+    const allWithinWatchPaths = Object.keys(normalized).every((rel) => {
+      const absolute = path.join(ROOT, rel);
+      return watchPaths.some((dir) => !path.relative(dir, absolute).startsWith('..'));
+    });
+    if (!Object.keys(normalized).length || !allWithinWatchPaths) {
+      await rebuildBaseline();
+    }
+  }
+
+  return baselines.get(baselineId);
+}
+
+async function getBaseline(baselineId = LOCAL_BASELINE_ID) {
+  if (baselines.has(baselineId)) return baselines.get(baselineId);
+  return loadBaseline(baselineId);
+}
+
+function totalBaselineEntries() {
+  let total = 0;
+  for (const data of baselines.values()) {
+    total += Object.keys(data || {}).length;
+  }
+  return total;
+}
+
+async function saveBaseline(baselineId = LOCAL_BASELINE_ID) {
+  const data = baselines.get(baselineId) || {};
+  const filePath = baselineFilePath(baselineId);
+  await fs.promises.writeFile(filePath, JSON.stringify(data, null, 2));
 }
 
 async function rebuildBaseline() {
-  baseline = {};
+  const baselineId = LOCAL_BASELINE_ID;
+  const rebuilt = {};
   for (const dir of watchPaths) {
     if (fs.existsSync(dir)) {
-      await walk(dir, baseline);
+      await walk(dir, rebuilt, baselineId);
     }
   }
-  await fs.promises.writeFile(BASELINE_FILE, JSON.stringify(baseline, null, 2));
+  baselines.set(baselineId, rebuilt);
+  await saveBaseline(baselineId);
   logEvent({
     id: crypto.randomUUID(),
     type: 'baseline',
@@ -224,21 +326,47 @@ async function rebuildBaseline() {
     timestamp: new Date().toISOString(),
     mitre: { id: 'T1036', name: 'Normalization - baseline reset' }
   });
-  return baseline;
+  return rebuilt;
 }
 
-async function purgeIgnoredBaselineEntries() {
+async function purgeIgnoredBaselineEntries(baselineId = LOCAL_BASELINE_ID) {
+  if (baselineId !== LOCAL_BASELINE_ID) return;
+  const data = baselines.get(baselineId) || {};
   let changed = false;
-  for (const rel of Object.keys(baseline)) {
+  for (const rel of Object.keys(data)) {
     const absolute = path.join(ROOT, rel);
     if (isIgnored(absolute)) {
-      delete baseline[rel];
+      delete data[rel];
       changed = true;
     }
   }
   if (changed) {
-    await fs.promises.writeFile(BASELINE_FILE, JSON.stringify(baseline, null, 2));
+    baselines.set(baselineId, data);
+    await saveBaseline(baselineId);
   }
+}
+
+async function updateBaselineFromEvent(baselineId, rel, kind, afterHash, metadata) {
+  const now = new Date().toISOString();
+  const data = await getBaseline(baselineId);
+
+  if (kind === 'delete') {
+    if (metadata) {
+      setLastKnownMetadata(baselineId, rel, ensureMetadataObject(metadata));
+    }
+    delete data[rel];
+  } else if (afterHash) {
+    const normalizedMeta = ensureMetadataObject(metadata);
+    setLastKnownMetadata(baselineId, rel, normalizedMeta);
+    data[rel] = {
+      hash: afterHash,
+      metadata: normalizedMeta,
+      updated_at: now
+    };
+  }
+
+  baselines.set(baselineId, data);
+  await saveBaseline(baselineId);
 }
 
 function logEvent(evt) {
@@ -347,19 +475,40 @@ function ensureMetadataObject(meta) {
   return normalized || emptyMetadata();
 }
 
-function processAndBroadcastEvent(rawEvent, sourceMeta = {}) {
+function metadataHasValues(meta) {
+  if (!meta) return false;
+  return Object.values(meta).some((value) => value !== null);
+}
+
+async function processAndBroadcastEvent(rawEvent, sourceMeta = {}) {
   const kind = rawEvent.type || rawEvent.action;
   const file = rawEvent.file || rawEvent.path;
   if (!kind || !file) return null;
 
+  const baselineId = sourceMeta.source === 'agent' ? sanitizeBaselineId(sourceMeta.agentId) : LOCAL_BASELINE_ID;
+  if (sourceMeta.source === 'agent' && !sourceMeta.agentId) {
+    throw new Error('Missing agentId for agent event');
+  }
+
+  const baselineData = await getBaseline(baselineId);
+  const baselineEntry = baselineData[file];
+
   const timestamp = rawEvent.timestamp || new Date().toISOString();
-  const beforeHash = rawEvent.beforeHash ?? rawEvent.prev_hash ?? rawEvent.prevHash ?? null;
+  let beforeHash = rawEvent.beforeHash ?? rawEvent.prev_hash ?? rawEvent.prevHash ?? null;
   const afterHash = rawEvent.afterHash ?? rawEvent.hash ?? null;
+  if (!beforeHash) {
+    beforeHash = baselineEntry?.hash || null;
+  }
+
   const mitre = rawEvent.mitre || MITRE_LOOKUP[kind];
   const severity = rawEvent.severity || (kind === 'delete' ? 'high' : kind === 'modify' ? 'medium' : 'info');
   const message = rawEvent.message || describeEvent(kind, file, beforeHash, afterHash);
   const aiAssessment = rawEvent.aiAssessment || buildAiAssessment(kind, file, beforeHash, afterHash);
-  const metadata = normalizeMetadata(rawEvent);
+
+  const baselineMeta = metadataFromBaseline(baselineEntry);
+  const incomingMeta = normalizeMetadata(rawEvent);
+  const chosenMetadata = metadataHasValues(incomingMeta) ? incomingMeta : baselineMeta || incomingMeta;
+  const metadata = ensureMetadataObject(chosenMetadata);
 
   const evt = {
     id: rawEvent.id || crypto.randomUUID(),
@@ -375,6 +524,7 @@ function processAndBroadcastEvent(rawEvent, sourceMeta = {}) {
     source: sourceMeta.source || 'local',
     agentId: sourceMeta.agentId || null,
     metadata,
+    prevMetadata: baselineMeta || null,
     user: rawEvent.user ?? metadata.user ?? null,
     uid: rawEvent.uid ?? metadata.uid ?? null,
     gid: rawEvent.gid ?? metadata.gid ?? null,
@@ -385,6 +535,8 @@ function processAndBroadcastEvent(rawEvent, sourceMeta = {}) {
     ctime: rawEvent.ctime ?? metadata.ctime ?? null,
     extra: rawEvent.extra ?? rawEvent.metadata ?? null
   };
+
+  await updateBaselineFromEvent(baselineId, file, kind, afterHash, metadata);
 
   pushEvent(evt);
   return evt;
@@ -505,7 +657,9 @@ async function handleChange(kind, filePath, baseDir) {
   if (rel.startsWith('..') || isIgnored(filePath)) return;
   const timestamp = new Date().toISOString();
   const mitre = MITRE_LOOKUP[kind];
-  const baselineEntry = baseline[rel];
+  const baselineId = LOCAL_BASELINE_ID;
+  const baselineData = await getBaseline(baselineId);
+  const baselineEntry = baselineData[rel];
   let before = baselineEntry?.hash || null;
   let after = null;
 
@@ -513,27 +667,21 @@ async function handleChange(kind, filePath, baseDir) {
   let metadata = metadataResult.metadata;
 
   if (kind === 'delete') {
-    const cached = lastKnownMetaByPath.get(rel);
+    const cached = getLastKnownMetadata(baselineId, rel);
     const baselineMeta = metadataFromBaseline(baselineEntry);
     if (!metadataResult.found) {
       metadata = ensureMetadataObject(cached || baselineMeta || metadata);
     } else {
       metadata = ensureMetadataObject(metadata);
-      lastKnownMetaByPath.set(rel, metadata);
     }
-    delete baseline[rel];
   } else if (fs.existsSync(filePath)) {
     after = await hashFile(filePath);
     metadata = ensureMetadataObject(metadata);
-    baseline[rel] = { hash: after, timestamp, metadata };
-    lastKnownMetaByPath.set(rel, metadata);
   } else {
     metadata = ensureMetadataObject(metadata);
   }
 
-  await fs.promises.writeFile(BASELINE_FILE, JSON.stringify(baseline, null, 2));
-
-  processAndBroadcastEvent(
+  await processAndBroadcastEvent(
     {
       type: kind,
       file: rel,
@@ -573,9 +721,11 @@ function setupWatcher() {
         if (!filename) return;
         const target = path.join(dir, filename);
         const rel = path.relative(ROOT, target);
+        const baselineData = await getBaseline(LOCAL_BASELINE_ID);
+        const baselineEntry = baselineData[rel];
         if (eventType === 'rename') {
           if (fs.existsSync(target)) {
-            await handleChange(baseline[rel] ? 'modify' : 'create', target, dir);
+            await handleChange(baselineEntry ? 'modify' : 'create', target, dir);
           } else {
             await handleChange('delete', target, dir);
           }
@@ -624,14 +774,14 @@ async function requestHandler(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname === '/api/events' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ events: eventHistory, baselineSize: Object.keys(baseline).length }));
+    res.end(JSON.stringify({ events: eventHistory, baselineSize: totalBaselineEntries() }));
     return;
   }
 
   if (url.pathname === '/api/rebuild' && req.method === 'POST') {
     await rebuildBaseline();
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, baselineSize: Object.keys(baseline).length }));
+    res.end(JSON.stringify({ ok: true, baselineSize: totalBaselineEntries() }));
     return;
   }
 
@@ -677,7 +827,7 @@ async function requestHandler(req, res) {
           return;
         }
 
-        processAndBroadcastEvent(
+        await processAndBroadcastEvent(
           {
             type: evt.action,
             file: evt.path,
