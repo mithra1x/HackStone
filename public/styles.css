@@ -449,9 +449,9 @@ body {
 
 .events-card { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
 .events-table { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: rgba(255,255,255,0.02); }
-.events-head { display: grid; grid-template-columns: 1.2fr 1fr 1.6fr 0.8fr 0.8fr; gap: 8px; padding: 12px; font-weight: 700; color: var(--muted); border-bottom: 1px solid var(--border); background: rgba(148, 163, 184, 0.06); }
+.events-head { display: grid; grid-template-columns: 1.2fr 1fr 1.6fr 0.8fr 1fr 0.8fr; gap: 8px; padding: 12px; font-weight: 700; color: var(--muted); border-bottom: 1px solid var(--border); background: rgba(148, 163, 184, 0.06); }
 .events-body { max-height: 360px; overflow-y: auto; display: flex; flex-direction: column; }
-.event-row-btn { display: grid; grid-template-columns: 1.2fr 1fr 1.6fr 0.8fr 0.8fr; gap: 8px; padding: 12px; border: none; background: transparent; color: var(--text); text-align: left; cursor: pointer; border-bottom: 1px solid var(--border); }
+.event-row-btn { display: grid; grid-template-columns: 1.2fr 1fr 1.6fr 0.8fr 1fr 0.8fr; gap: 8px; padding: 12px; border: none; background: transparent; color: var(--text); text-align: left; cursor: pointer; border-bottom: 1px solid var(--border); }
 .event-row-btn:hover { background: rgba(148, 163, 184, 0.08); }
 .event-row-btn.active { background: rgba(56, 189, 248, 0.12); border-left: 2px solid var(--accent); }
 .event-row-btn span { display: inline-flex; align-items: center; gap: 6px; }
