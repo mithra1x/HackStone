@@ -104,6 +104,20 @@
       timeStyle: 'medium'
     }).format(new Date(ts));
 
+    const getMetadata = (evt) => {
+      if (!evt) return null;
+      const meta = evt.metadata || {};
+      return {
+        user: meta.user ?? evt.user ?? null,
+        uid: meta.uid ?? evt.uid ?? null,
+        gid: meta.gid ?? evt.gid ?? null,
+        mode: meta.mode ?? evt.mode ?? evt.permissions ?? null,
+        size: meta.size ?? evt.size ?? null,
+        mtime: meta.mtime ?? evt.mtime ?? null,
+        ctime: meta.ctime ?? evt.ctime ?? null
+      };
+    };
+
     const countersFromEvents = (events) => events.reduce(
       (acc, evt) => {
         if (evt.type === 'create' || evt.type === 'modify' || evt.type === 'delete') {
@@ -864,15 +878,15 @@
               .join(', ')
           : '—';
 
+      const metadataSection = renderMetadataSection(evt);
+
       const details = evt
         ? [
             ['File path', evt.file || evt.path || '—'],
             ['Observed time', evt.timestamp ? formatTime(evt.timestamp) : '—'],
             ['Action', evt.type || '—'],
-            ['User / User ID', evt.user || evt.uid || '—'],
-            ['Group / Group ID', evt.group || evt.gid || '—'],
-            ['Permissions', evt.permissions || '—'],
-            ['Size', evt.size ? `${evt.size} bytes` : '—'],
+            ['Source', evt.source || '—'],
+            ['Agent', evt.agentId || '—'],
             ['SHA-256', evt.sha256 || evt.hash || evt.afterHash || '—'],
             ['MD5', evt.md5 || '—'],
             ['Classification / tags', evt.data_classification || evt.tags?.join?.(', ') || '—'],
@@ -906,18 +920,59 @@
             </div>
             <div class="detail-grid">
               ${details
-                .map(
-                  ([label, value]) => `
-                    <div class="detail-tile">
-                      <p class="detail-label">${label}</p>
-                      <p class="detail-value">${value}</p>
-                    </div>`
-                )
-                .join('') || '<p class="empty">No event selected.</p>'}
+            .map(
+              ([label, value]) => `
+                <div class="detail-tile">
+                  <p class="detail-label">${label}</p>
+                  <p class="detail-value">${value}</p>
+                </div>`
+            )
+            .join('') || '<p class="empty">No event selected.</p>'}
             </div>
+            ${metadataSection}
             ${evt ? renderHashTable(evt.beforeHash, evt.afterHash) : ''}
             ${ai?.reason ? `<p class="ai-reason">${ai.reason}</p>` : ''}
           </section>
+        </div>
+      `;
+    }
+
+    function renderMetadataSection(evt) {
+      if (!evt) return '';
+      const meta = getMetadata(evt) || {};
+      const formatOrNA = (value) => (value === null || value === undefined || value === '' ? 'N/A' : value);
+      const rows = [
+        ['User', formatOrNA(meta.user)],
+        ['UID', formatOrNA(meta.uid)],
+        ['GID', formatOrNA(meta.gid)],
+        ['Permissions', formatOrNA(meta.mode)],
+        [
+          'File size',
+          meta.size === null || meta.size === undefined
+            ? 'N/A'
+            : `${Number(meta.size).toLocaleString('en-US')} bytes`
+        ],
+        ['Modified time', meta.mtime ? formatTime(meta.mtime) : 'N/A'],
+        ['Change time', meta.ctime ? formatTime(meta.ctime) : 'N/A']
+      ];
+
+      return `
+        <div class="metadata-section">
+          <div class="metadata-head">
+            <p class="eyebrow">File Metadata</p>
+            <h3 class="title-md">Filesystem attributes</h3>
+          </div>
+          <div class="metadata-grid">
+            ${rows
+              .map(
+                ([label, value]) => `
+                  <div class="metadata-item">
+                    <p class="detail-label">${label}</p>
+                    <p class="detail-value">${value}</p>
+                  </div>`
+              )
+              .join('')}
+          </div>
         </div>
       `;
     }
