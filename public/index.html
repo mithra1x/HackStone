@@ -91,7 +91,9 @@
       selectedEventForDetails: null,
       eventsFilter: {
         query: '',
-        mode: 'path'
+        mode: 'path',
+        source: 'all',
+        agentId: 'all'
       },
       timeRange: '24h',
       timelineScrollTop: 0
@@ -583,6 +585,8 @@
     function getFilteredEvents() {
       const search = state.eventsFilter.query.trim().toLowerCase();
       const mode = state.eventsFilter.mode || 'path';
+      const sourceFilter = state.eventsFilter.source || 'all';
+      const agentFilter = state.eventsFilter.agentId || 'all';
       const range = timeRangeConfig[state.timeRange]?.windowMs || timeRangeConfig['24h'].windowMs;
       const now = Date.now();
 
@@ -590,6 +594,15 @@
         .filter((evt) => {
           const ts = evt.timestamp ? new Date(evt.timestamp).getTime() : now;
           if (Number.isNaN(ts) || now - ts > range) return false;
+          if (sourceFilter === 'local') return evt.source === 'local';
+          if (sourceFilter === 'agent') return evt.source === 'agent';
+          return true;
+        })
+        .filter((evt) => {
+          if (sourceFilter !== 'agent' || agentFilter === 'all') return true;
+          return (evt.agentId || null) === agentFilter;
+        })
+        .filter((evt) => {
           if (!search) return true;
           if (mode === 'action') {
             return (evt.type || '').toLowerCase().includes(search);
@@ -611,6 +624,29 @@
         }));
     }
 
+    function getAgentOptions() {
+      const range = timeRangeConfig[state.timeRange]?.windowMs || timeRangeConfig['24h'].windowMs;
+      const now = Date.now();
+      const ids = new Set();
+
+      state.events.forEach((evt) => {
+        const ts = evt.timestamp ? new Date(evt.timestamp).getTime() : now;
+        if (Number.isNaN(ts) || now - ts > range) return;
+        if (evt.source !== 'agent' || !evt.agentId) return;
+        ids.add(evt.agentId);
+      });
+
+      return Array.from(ids);
+    }
+
+    function formatEventSource(evt) {
+      if (evt?.source === 'agent') {
+        return evt.agentId ? `agent: ${evt.agentId}` : 'agent';
+      }
+      if (evt?.source === 'local') return 'local';
+      return evt?.source || 'local';
+    }
+
     function renderAlertsConsoleSection(alertsModel, filteredEvents, rangeKey) {
       const selected = state.selectedEvent || filteredEvents[0];
       const latestPath = selected?.file || selected?.path || 'Select an event from the list to see details.';
@@ -622,6 +658,8 @@
           : state.eventsFilter.mode === 'severity'
             ? 'severity'
             : 'path';
+      const agentOptions = getAgentOptions();
+      const showAgentFilter = state.eventsFilter.source === 'agent' && agentOptions.length > 0;
       const detailRows = selected
         ? [
             ['Path', latestPath],
@@ -699,6 +737,23 @@
                     <option value="action" ${state.eventsFilter.mode === 'action' ? 'selected' : ''}>Action</option>
                     <option value="severity" ${state.eventsFilter.mode === 'severity' ? 'selected' : ''}>Severity</option>
                   </select>
+                  <select class="select mode-select" id="events-source">
+                    <option value="all" ${state.eventsFilter.source === 'all' ? 'selected' : ''}>All sources</option>
+                    <option value="local" ${state.eventsFilter.source === 'local' ? 'selected' : ''}>Local</option>
+                    <option value="agent" ${state.eventsFilter.source === 'agent' ? 'selected' : ''}>Agent</option>
+                  </select>
+                  ${
+                    showAgentFilter
+                      ? `<select class="select mode-select" id="events-agent">
+                          <option value="all" ${state.eventsFilter.agentId === 'all' ? 'selected' : ''}>All agents</option>
+                          ${agentOptions
+                            .map(
+                              (agent) => `<option value="${agent}" ${state.eventsFilter.agentId === agent ? 'selected' : ''}>${agent}</option>`
+                            )
+                            .join('')}
+                        </select>`
+                      : ''
+                  }
                   <input class="input" id="events-search" type="search" placeholder="Search by ${filterModeLabel}" value="${state.eventsFilter.query}" />
                   <select class="select range-select" id="events-range">
                     <option value="24h" ${state.timeRange === '24h' ? 'selected' : ''}>Last 24h</option>
@@ -712,7 +767,7 @@
               </div>
               <div class="events-table" role="table">
                 <div class="events-head" role="row">
-                  <span>Time</span><span>Action</span><span>Description</span><span>Severity</span><span>Rule</span>
+                  <span>Time</span><span>Action</span><span>Description</span><span>Severity</span><span>Source</span><span>Rule</span>
                 </div>
                 <div class="events-body" role="rowgroup">
                   ${filteredEvents
@@ -724,6 +779,7 @@
                           <span class="flex items-center gap-2"><span class="pill compact">${evt.type || 'info'}</span>${evt.file || evt.path || '—'}</span>
                           <span class="truncate">${evt.message || evt.description || 'File event'}</span>
                           <span>${evt.severity || 'info'}</span>
+                          <span>${formatEventSource(evt)}</span>
                           <span>${evt.rule_id || '—'}</span>
                         </button>`;
                     })
@@ -1108,6 +1164,23 @@
         if (modeSelect) {
           modeSelect.addEventListener('change', (e) => {
             state.eventsFilter.mode = e.target.value;
+            render();
+          });
+        }
+
+        const sourceSelect = document.getElementById('events-source');
+        if (sourceSelect) {
+          sourceSelect.addEventListener('change', (e) => {
+            state.eventsFilter.source = e.target.value;
+            state.eventsFilter.agentId = 'all';
+            render();
+          });
+        }
+
+        const agentSelect = document.getElementById('events-agent');
+        if (agentSelect) {
+          agentSelect.addEventListener('change', (e) => {
+            state.eventsFilter.agentId = e.target.value;
             render();
           });
         }
