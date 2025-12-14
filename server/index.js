@@ -755,6 +755,18 @@ function metadataHasValues(meta) {
   return Object.values(meta).some((value) => value !== null);
 }
 
+function normalizeEventShape(evt) {
+  if (!evt) return evt;
+  const normalized = { ...evt };
+  if (!normalized.path) {
+    normalized.path = normalized.file || normalized.path || null;
+  }
+  if (!normalized.action) {
+    normalized.action = normalized.type || normalized.action || null;
+  }
+  return normalized;
+}
+
 async function processAndBroadcastEvent(rawEvent, sourceMeta = {}) {
   const kind = rawEvent.type || rawEvent.action;
   const file = rawEvent.file || rawEvent.path;
@@ -785,10 +797,14 @@ async function processAndBroadcastEvent(rawEvent, sourceMeta = {}) {
   const chosenMetadata = metadataHasValues(incomingMeta) ? incomingMeta : baselineMeta || incomingMeta;
   const metadata = ensureMetadataObject(chosenMetadata);
 
+  const pathValue = rawEvent.path || file;
+  const actionValue = rawEvent.action || kind;
+
   const evt = {
     id: rawEvent.id || crypto.randomUUID(),
     type: kind,
     file,
+    path: pathValue,
     timestamp,
     beforeHash,
     afterHash,
@@ -808,7 +824,8 @@ async function processAndBroadcastEvent(rawEvent, sourceMeta = {}) {
     size: rawEvent.size ?? metadata.size ?? null,
     mtime: rawEvent.mtime ?? metadata.mtime ?? null,
     ctime: rawEvent.ctime ?? metadata.ctime ?? null,
-    extra: rawEvent.extra ?? rawEvent.metadata ?? null
+    extra: rawEvent.extra ?? rawEvent.metadata ?? null,
+    action: actionValue
   };
 
   applyMetadataRules(evt);
@@ -885,10 +902,11 @@ function buildAiAssessment(kind, rel, before, after) {
 }
 
 function pushEvent(evt) {
-  eventHistory.unshift(evt);
+  const normalized = normalizeEventShape(evt);
+  eventHistory.unshift(normalized);
   eventHistory = eventHistory.slice(0, 200);
-  logEvent(evt);
-  broadcast(evt);
+  logEvent(normalized);
+  broadcast(normalized);
 }
 
 function broadcast(payload) {
@@ -1197,7 +1215,8 @@ async function requestHandler(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname === '/api/events' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ events: eventHistory, baselineSize: totalBaselineEntries() }));
+    const events = eventHistory.map(normalizeEventShape);
+    res.end(JSON.stringify({ events, baselineSize: totalBaselineEntries() }));
     return;
   }
 
