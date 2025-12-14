@@ -64,6 +64,8 @@ const SUPPRESS_THRESHOLD = 5;
 const SUPPRESSION_STALE_MS = 5 * 60 * 1000;
 const suppressionTracker = new Map();
 let metadataRules = [];
+const EVENT_BUFFER_LIMIT = 500;
+const STARTUP_LOG_LOAD_LIMIT = 200;
 
 const DEFAULT_METADATA_RULES = [
   {
@@ -454,6 +456,28 @@ async function updateBaselineFromEvent(baselineId, rel, kind, afterHash, metadat
 function logEvent(evt) {
   const line = JSON.stringify(evt);
   fs.appendFile(LOG_FILE, line + '\n', () => {});
+}
+
+function loadRecentEventsFromLog(limit = STARTUP_LOG_LOAD_LIMIT) {
+  if (!fs.existsSync(LOG_FILE)) return;
+  try {
+    const content = fs.readFileSync(LOG_FILE, 'utf-8');
+    if (!content) return;
+    const lines = content.split(/\r?\n/).filter(Boolean);
+    const recent = lines.slice(-Math.max(limit, 0));
+    for (const line of recent) {
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed && typeof parsed === 'object') {
+          storeEventInHistory(parsed, { skipLog: true, skipBroadcast: true });
+        }
+      } catch (err) {
+        // Skip invalid JSON lines silently to avoid startup failures
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to load recent events from log:', err.message);
+  }
 }
 
 function suppressionKey(evt) {
@@ -903,10 +927,21 @@ function buildAiAssessment(kind, rel, before, after) {
 
 function pushEvent(evt) {
   const normalized = normalizeEventShape(evt);
+  storeEventInHistory(normalized);
+}
+
+function storeEventInHistory(evt, { skipLog = false, skipBroadcast = false } = {}) {
+  const normalized = normalizeEventShape(evt);
   eventHistory.unshift(normalized);
-  eventHistory = eventHistory.slice(0, 200);
-  logEvent(normalized);
-  broadcast(normalized);
+  if (eventHistory.length > EVENT_BUFFER_LIMIT) {
+    eventHistory = eventHistory.slice(0, EVENT_BUFFER_LIMIT);
+  }
+  if (!skipLog) {
+    logEvent(normalized);
+  }
+  if (!skipBroadcast) {
+    broadcast(normalized);
+  }
 }
 
 function broadcast(payload) {
@@ -1300,6 +1335,7 @@ async function requestHandler(req, res) {
 
 async function bootstrap() {
   ensureDirectories();
+  loadRecentEventsFromLog();
   loadServerConfig();
   loadMetadataRules();
   await loadBaseline();
