@@ -52,6 +52,12 @@ let watchPaths = [];
 let ignorePatternRegexes = [];
 const lastKnownMetaByPath = new Map();
 const MAX_BODY_SIZE = 1 * 1024 * 1024; // 1MB
+const IDEMPOTENCY_CACHE_LIMIT = 10000;
+const IDEMPOTENCY_CACHE_TTL_MS = 10 * 60 * 1000;
+const processedEventIds = new Map(); // event_id -> timestamp
+const agentEventBuffer = [];
+const MAX_AGENT_BUFFER_SIZE = 2000;
+let agentBufferProcessing = false;
 
 const MITRE_LOOKUP = {
   create: { id: 'T1587', name: 'Develop Capabilities' },
@@ -648,6 +654,136 @@ function validateAgentEvent(evt) {
   return allowedActions.has(evt.action);
 }
 
+function deriveEventId(evt, agentId) {
+  const provided = evt.event_id || evt.eventId || evt.id;
+  if (provided) return String(provided);
+  const base = `${agentId || ''}|${evt.path}|${evt.action}|${evt.timestamp}`;
+  return crypto.createHash('sha256').update(base).digest('hex');
+}
+
+function normalizeAgentEvent(evt, agentId) {
+  const eventId = deriveEventId(evt, agentId);
+  return {
+    ...evt,
+    agentId,
+    event_id: eventId,
+    id: eventId,
+    action: evt.action,
+    path: evt.path,
+    timestamp: evt.timestamp,
+    prev_hash: evt.prev_hash ?? evt.prevHash ?? evt.beforeHash ?? null,
+    hash: evt.hash ?? evt.afterHash ?? null
+  };
+}
+
+function cleanupIdempotencyCache(now = Date.now()) {
+  for (const [id, ts] of processedEventIds) {
+    if (now - ts > IDEMPOTENCY_CACHE_TTL_MS) {
+      processedEventIds.delete(id);
+    }
+  }
+}
+
+function isDuplicateEvent(eventId, now = Date.now()) {
+  cleanupIdempotencyCache(now);
+  return processedEventIds.has(eventId);
+}
+
+function markEventProcessed(eventId, now = Date.now()) {
+  processedEventIds.set(eventId, now);
+  if (processedEventIds.size > IDEMPOTENCY_CACHE_LIMIT) {
+    const oldestKey = processedEventIds.keys().next().value;
+    processedEventIds.delete(oldestKey);
+  }
+}
+
+function enqueueAgentEvent(bufferedEvent) {
+  if (agentEventBuffer.length >= MAX_AGENT_BUFFER_SIZE) {
+    const dropped = agentEventBuffer.shift();
+    console.warn(
+      `agent_ingest buffer full; dropping oldest event ${dropped?.event?.event_id || dropped?.event?.id || 'unknown'}`
+    );
+    dropped?.onComplete?.('dropped');
+  }
+  agentEventBuffer.push(bufferedEvent);
+  processAgentEventBuffer();
+}
+
+async function processAgentEventBuffer() {
+  if (agentBufferProcessing) return;
+  agentBufferProcessing = true;
+  try {
+    while (agentEventBuffer.length) {
+      const buffered = agentEventBuffer.shift();
+      const status = await handleBufferedAgentEvent(buffered);
+      buffered.onComplete?.(status);
+    }
+  } finally {
+    agentBufferProcessing = false;
+  }
+}
+
+async function handleBufferedAgentEvent(buffered) {
+  const now = Date.now();
+  const eventId = buffered?.event?.event_id;
+  if (!eventId) return 'error';
+  if (isDuplicateEvent(eventId, now)) {
+    return 'duplicate';
+  }
+
+  try {
+    await processAndBroadcastEvent(
+      {
+        ...buffered.event,
+        id: eventId,
+        type: buffered.event.action,
+        action: buffered.event.action,
+        path: buffered.event.path,
+        beforeHash: buffered.event.prev_hash,
+        afterHash: buffered.event.hash
+      },
+      { source: 'agent', agentId: buffered.event.agentId }
+    );
+    markEventProcessed(eventId, now);
+    return 'processed';
+  } catch (err) {
+    console.error('Failed to process agent event', err.message || err);
+    return 'error';
+  }
+}
+
+function processAgentEventsBatch(events) {
+  return new Promise((resolve) => {
+    const summary = { received: events.length, processed: 0, duplicates: 0 };
+    if (!events.length) {
+      resolve(summary);
+      return;
+    }
+
+    let remaining = events.length;
+    events.forEach((event) => {
+      enqueueAgentEvent({
+        event,
+        onComplete: (status) => {
+          if (status === 'duplicate') summary.duplicates += 1;
+          else summary.processed += 1;
+
+          remaining -= 1;
+          if (remaining === 0) {
+            resolve(summary);
+          }
+        }
+      });
+    });
+  });
+}
+
+function describeAgentIds(events) {
+  const ids = new Set(events.map((evt) => evt.agentId || 'unknown'));
+  if (ids.size === 1) return ids.values().next().value;
+  return 'mixed';
+}
+
 async function handleChange(kind, filePath, baseDir) {
   if (!filePath) return;
   const relWithinBase = baseDir ? path.relative(baseDir, filePath) : path.relative(ROOT, filePath);
@@ -806,7 +942,7 @@ async function requestHandler(req, res) {
         return;
       }
 
-      let received = 0;
+      const normalizedEvents = [];
       for (const evt of events) {
         if (!validateAgentEvent(evt)) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -827,34 +963,17 @@ async function requestHandler(req, res) {
           return;
         }
 
-        await processAndBroadcastEvent(
-          {
-            type: evt.action,
-            file: evt.path,
-            timestamp: evt.timestamp,
-            beforeHash: evt.prev_hash ?? evt.prevHash ?? null,
-            afterHash: evt.hash ?? evt.afterHash ?? null,
-            mitre: evt.mitre,
-            severity: evt.severity,
-            message: evt.message,
-            aiAssessment: evt.aiAssessment,
-            extra: evt.extra,
-            user: evt.user,
-            uid: evt.uid,
-            gid: evt.gid,
-            mode: evt.mode,
-            size: evt.size,
-            mtime: evt.mtime,
-            ctime: evt.ctime,
-            metadata: evt.metadata
-          },
-          { source: 'agent', agentId }
-        );
-        received += 1;
+        normalizedEvents.push(normalizeAgentEvent(evt, agentId));
       }
 
+      const summary = await processAgentEventsBatch(normalizedEvents);
+      const agentIdForLog = describeAgentIds(normalizedEvents);
+      console.log(
+        `agent_ingest: received=${summary.received} processed=${summary.processed} duplicates=${summary.duplicates} agentId=${agentIdForLog}`
+      );
+
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, received }));
+      res.end(JSON.stringify({ ok: true, ...summary }));
     } catch (err) {
       res.writeHead(err.statusCode || 400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: err.message || 'Invalid request' }));
