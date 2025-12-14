@@ -2,6 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
 
 const ROOT = path.resolve(__dirname, '..');
 const DEFAULT_WATCH_DIR = path.join(ROOT, 'watched');
@@ -47,6 +48,7 @@ const sseClients = new Set();
 let agentRegistry = new Map();
 let watchPaths = [];
 let ignorePatternRegexes = [];
+const lastKnownMetaByPath = new Map();
 const MAX_BODY_SIZE = 1 * 1024 * 1024; // 1MB
 
 const MITRE_LOOKUP = {
@@ -164,7 +166,9 @@ async function walk(dir, collector = {}) {
     } else if (entry.isFile()) {
       const rel = path.relative(ROOT, fullPath);
       const hash = await hashFile(fullPath);
-      collector[rel] = { hash, timestamp: new Date().toISOString() };
+      const { metadata } = await collectFilesystemMetadata(fullPath);
+      collector[rel] = { hash, timestamp: new Date().toISOString(), metadata };
+      lastKnownMetaByPath.set(rel, metadata);
     }
   }
   return collector;
@@ -242,6 +246,107 @@ function logEvent(evt) {
   fs.appendFile(LOG_FILE, line + '\n', () => {});
 }
 
+function normalizeMode(mode) {
+  if (mode === undefined || mode === null) return null;
+  const numeric = typeof mode === 'string' ? parseInt(mode, 8) : Number(mode);
+  if (Number.isNaN(numeric)) return null;
+  return (numeric & 0o777).toString(8).padStart(4, '0');
+}
+
+function normalizeTimestamp(ts) {
+  if (!ts) return null;
+  const date = ts instanceof Date ? ts : new Date(ts);
+  const time = date.getTime();
+  if (!Number.isFinite(time)) return null;
+  return date.toISOString();
+}
+
+function lookupUser(uid) {
+  if (uid === undefined || uid === null) return null;
+  try {
+    return os.userInfo({ uid }).username || null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function normalizeMetadata(rawEvent = {}) {
+  const metaSource = rawEvent.metadata || rawEvent.meta || {};
+  const fields = { ...rawEvent, ...metaSource };
+  const uid = fields.uid ?? null;
+  const gid = fields.gid ?? null;
+  const mode = normalizeMode(fields.mode ?? fields.permissions);
+  const size = fields.size ?? null;
+  const mtime = normalizeTimestamp(fields.mtime);
+  const ctime = normalizeTimestamp(fields.ctime);
+  const user = fields.user ?? lookupUser(uid);
+
+  if (
+    uid === null &&
+    gid === null &&
+    user === null &&
+    mode === null &&
+    size === null &&
+    mtime === null &&
+    ctime === null
+  ) {
+    return {
+      uid: null,
+      gid: null,
+      user: null,
+      mode: null,
+      size: null,
+      mtime: null,
+      ctime: null
+    };
+  }
+
+  return { uid, gid, user, mode, size, mtime, ctime };
+}
+
+function emptyMetadata() {
+  return {
+    uid: null,
+    gid: null,
+    user: null,
+    mode: null,
+    size: null,
+    mtime: null,
+    ctime: null
+  };
+}
+
+async function collectFilesystemMetadata(filePath) {
+  try {
+    const stat = await fs.promises.lstat(filePath);
+    return {
+      metadata: {
+        uid: stat.uid ?? null,
+        gid: stat.gid ?? null,
+        user: lookupUser(stat.uid),
+        mode: normalizeMode(stat.mode),
+        size: stat.size ?? null,
+        mtime: normalizeTimestamp(stat.mtime),
+        ctime: normalizeTimestamp(stat.ctime)
+      },
+      found: true
+    };
+  } catch (err) {
+    return { metadata: emptyMetadata(), found: false };
+  }
+}
+
+function metadataFromBaseline(entry) {
+  if (!entry || !entry.metadata) return null;
+  return normalizeMetadata({ metadata: entry.metadata });
+}
+
+function ensureMetadataObject(meta) {
+  if (!meta) return emptyMetadata();
+  const normalized = normalizeMetadata({ metadata: meta });
+  return normalized || emptyMetadata();
+}
+
 function processAndBroadcastEvent(rawEvent, sourceMeta = {}) {
   const kind = rawEvent.type || rawEvent.action;
   const file = rawEvent.file || rawEvent.path;
@@ -254,6 +359,7 @@ function processAndBroadcastEvent(rawEvent, sourceMeta = {}) {
   const severity = rawEvent.severity || (kind === 'delete' ? 'high' : kind === 'modify' ? 'medium' : 'info');
   const message = rawEvent.message || describeEvent(kind, file, beforeHash, afterHash);
   const aiAssessment = rawEvent.aiAssessment || buildAiAssessment(kind, file, beforeHash, afterHash);
+  const metadata = normalizeMetadata(rawEvent);
 
   const evt = {
     id: rawEvent.id || crypto.randomUUID(),
@@ -268,10 +374,15 @@ function processAndBroadcastEvent(rawEvent, sourceMeta = {}) {
     aiAssessment,
     source: sourceMeta.source || 'local',
     agentId: sourceMeta.agentId || null,
-    user: rawEvent.user ?? null,
-    uid: rawEvent.uid ?? null,
-    gid: rawEvent.gid ?? null,
-    mode: rawEvent.mode ?? null,
+    metadata,
+    user: rawEvent.user ?? metadata.user ?? null,
+    uid: rawEvent.uid ?? metadata.uid ?? null,
+    gid: rawEvent.gid ?? metadata.gid ?? null,
+    mode: rawEvent.mode ?? metadata.mode ?? null,
+    permissions: rawEvent.permissions ?? metadata.mode ?? null,
+    size: rawEvent.size ?? metadata.size ?? null,
+    mtime: rawEvent.mtime ?? metadata.mtime ?? null,
+    ctime: rawEvent.ctime ?? metadata.ctime ?? null,
     extra: rawEvent.extra ?? rawEvent.metadata ?? null
   };
 
@@ -394,14 +505,30 @@ async function handleChange(kind, filePath, baseDir) {
   if (rel.startsWith('..') || isIgnored(filePath)) return;
   const timestamp = new Date().toISOString();
   const mitre = MITRE_LOOKUP[kind];
-  let before = baseline[rel]?.hash || null;
+  const baselineEntry = baseline[rel];
+  let before = baselineEntry?.hash || null;
   let after = null;
 
+  const metadataResult = await collectFilesystemMetadata(filePath);
+  let metadata = metadataResult.metadata;
+
   if (kind === 'delete') {
+    const cached = lastKnownMetaByPath.get(rel);
+    const baselineMeta = metadataFromBaseline(baselineEntry);
+    if (!metadataResult.found) {
+      metadata = ensureMetadataObject(cached || baselineMeta || metadata);
+    } else {
+      metadata = ensureMetadataObject(metadata);
+      lastKnownMetaByPath.set(rel, metadata);
+    }
     delete baseline[rel];
   } else if (fs.existsSync(filePath)) {
     after = await hashFile(filePath);
-    baseline[rel] = { hash: after, timestamp };
+    metadata = ensureMetadataObject(metadata);
+    baseline[rel] = { hash: after, timestamp, metadata };
+    lastKnownMetaByPath.set(rel, metadata);
+  } else {
+    metadata = ensureMetadataObject(metadata);
   }
 
   await fs.promises.writeFile(BASELINE_FILE, JSON.stringify(baseline, null, 2));
@@ -416,7 +543,8 @@ async function handleChange(kind, filePath, baseDir) {
       mitre,
       severity: kind === 'delete' ? 'high' : kind === 'modify' ? 'medium' : 'info',
       message: describeEvent(kind, rel, before, after),
-      aiAssessment: buildAiAssessment(kind, rel, before, after)
+      aiAssessment: buildAiAssessment(kind, rel, before, after),
+      metadata
     },
     { source: 'local' }
   );
@@ -564,7 +692,11 @@ async function requestHandler(req, res) {
             user: evt.user,
             uid: evt.uid,
             gid: evt.gid,
-            mode: evt.mode
+            mode: evt.mode,
+            size: evt.size,
+            mtime: evt.mtime,
+            ctime: evt.ctime,
+            metadata: evt.metadata
           },
           { source: 'agent', agentId }
         );
