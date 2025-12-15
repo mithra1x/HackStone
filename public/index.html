@@ -108,6 +108,8 @@
       investigatorHoverId: null
     };
 
+    let investigatorEscHandler = null;
+
     let timelineRefreshTimer = null;
 
     const formatTime = (ts) => new Intl.DateTimeFormat('en', {
@@ -1190,8 +1192,8 @@
         target: graph.nodes.filter((n) => n.kind === 'target')
       };
 
-      const columnX = { actor: 100, event: 380, target: 660 };
-      const spacing = 110;
+      const columnX = { actor: 120, event: 420, target: 720 };
+      const spacing = 88;
 
       const placements = {};
       Object.entries(nodesByKind).forEach(([kind, list]) => {
@@ -1202,7 +1204,7 @@
         sortedList.forEach((node, idx) => {
           placements[node.id] = {
             x: columnX[kind],
-            y: 80 + idx * spacing,
+            y: 70 + idx * spacing,
             node
           };
         });
@@ -1210,16 +1212,14 @@
 
       const height = Math.max(
         360,
-        ...Object.values(nodesByKind).map((list) => 80 + list.length * spacing)
+        ...Object.values(nodesByKind).map((list) => 70 + list.length * spacing)
       );
 
       return { placements, height };
     }
 
-    function renderInvestigatorDetails(node) {
-      if (!node) {
-        return '<div class="investigator-empty">Select a node to view details.</div>';
-      }
+    function renderInvestigatorDetails(node, graph) {
+      if (!node) return '';
 
       if (node.kind === 'event') {
         const meta = node.meta || {};
@@ -1261,8 +1261,10 @@
       }
 
       if (node.kind === 'target') {
-        const related = state.events
-          .filter((evt) => (evt.path || evt.file) === node.meta?.path)
+        const relatedEdges = (graph?.edges || []).filter((edge) => edge.to === node.id);
+        const relatedEvents = relatedEdges
+          .map((edge) => graph.nodes.find((n) => n.id === edge.from))
+          .filter((n) => n && n.kind === 'event')
           .slice(0, 6);
 
         return `
@@ -1272,15 +1274,15 @@
             <p class="text-muted">Recent activity touching this file.</p>
             <div class="investigator-list">
               ${
-                related.length
-                  ? related
+                relatedEvents.length
+                  ? relatedEvents
                       .map(
                         (evt) => `
                           <div class="investigator-row">
-                            <div class="pill">${evt.type || evt.action}</div>
+                            <div class="pill">${evt.label || evt.meta?.action || evt.meta?.type}</div>
                             <div class="grow">
-                              <p class="detail-label">${formatTimeShort(evt.timestamp || Date.now())}</p>
-                              <p class="detail-value">${evt.user || evt.metadata?.user || evt.agentId || 'actor'}</p>
+                              <p class="detail-label">${formatTimeShort(evt.timestamp || evt.meta?.timestamp || Date.now())}</p>
+                              <p class="detail-value">${evt.meta?.user || evt.meta?.agentId || 'actor'}</p>
                             </div>
                             <span class="severity-pill severity-${evt.severity || 'info'}">${(evt.severity || 'info').toUpperCase()}</span>
                           </div>
@@ -1296,11 +1298,12 @@
 
       if (node.kind === 'actor') {
         const meta = node.meta || {};
+        const relatedCount = (graph?.edges || []).filter((edge) => edge.from === node.id || edge.to === node.id).length;
         return `
           <div class="investigator-panel">
             <p class="eyebrow">Actor</p>
             <h3 class="title-md">${node.label}</h3>
-            <p class="text-muted">Source of observed file events.</p>
+            <p class="text-muted">Source of observed file events (${relatedCount || 0} links).</p>
             <div class="details-grid">
               ${['source', 'agentId', 'user']
                 .map(
@@ -1337,8 +1340,8 @@
         });
       }
 
-      const nodeWidth = 180;
-      const nodeHeight = 56;
+      const nodeWidth = 160;
+      const nodeHeight = 50;
 
       const edges = graph.edges
         .map((edge) => {
@@ -1349,8 +1352,8 @@
           const endX = to.x - nodeWidth / 2;
           const startY = from.y;
           const endY = to.y;
-          const control1X = startX + 80;
-          const control2X = endX - 80;
+          const control1X = startX + 64;
+          const control2X = endX - 64;
           const active = activeIds.size ? activeIds.has(edge.from) && activeIds.has(edge.to) : true;
           const dimmed = activeIds.size && !active;
           return `
@@ -1380,10 +1383,28 @@
         .join('');
 
       return `
-        <svg class="investigator-graph" viewBox="0 0 800 ${height}" role="img" aria-label="Investigation graph">
+        <svg class="investigator-graph" viewBox="0 0 900 ${height}" role="img" aria-label="Investigation graph">
           ${edges}
           ${nodes}
         </svg>
+      `;
+    }
+
+    function renderInvestigatorModal(node, graph) {
+      if (!node) return '';
+      return `
+        <div class="modal-overlay" id="investigator-modal">
+          <div class="modal" role="dialog" aria-modal="true">
+            <div class="modal-head">
+              <div>
+                <p class="eyebrow">${node.kind === 'event' ? 'Event' : node.kind === 'target' ? 'Target' : 'Actor'}</p>
+                <h3 class="title-md">${node.label || 'Details'}</h3>
+              </div>
+              <button class="modal-close" id="investigator-modal-close" aria-label="Close">✕</button>
+            </div>
+            <div class="modal-body">${renderInvestigatorDetails(node, graph)}</div>
+          </div>
+        </div>
       `;
     }
 
@@ -1407,11 +1428,9 @@
             </div>
           </div>
           <div class="card investigator-wrap">
-            <div class="investigator-grid">
-              <div class="investigator-canvas">${renderInvestigatorGraph(graph)}</div>
-              <aside class="investigator-drawer">${renderInvestigatorDetails(state.investigatorSelectedNode)}</aside>
-            </div>
+            <div class="investigator-canvas">${renderInvestigatorGraph(graph)}</div>
           </div>
+          ${renderInvestigatorModal(state.investigatorSelectedNode, graph)}
         </div>
       `;
     }
@@ -1692,6 +1711,33 @@
             render();
           });
         });
+
+        const modal = document.getElementById('investigator-modal');
+        const closeModal = () => {
+          state.investigatorSelectedNode = null;
+          render();
+        };
+
+        if (modal) {
+          const closeBtn = document.getElementById('investigator-modal-close');
+          if (closeBtn) closeBtn.addEventListener('click', closeModal);
+          modal.addEventListener('click', (e) => {
+            if (e.target === modal) closeModal();
+          });
+
+          if (!investigatorEscHandler) {
+            investigatorEscHandler = (e) => {
+              if (e.key === 'Escape') closeModal();
+            };
+            document.addEventListener('keydown', investigatorEscHandler);
+          }
+        } else if (investigatorEscHandler) {
+          document.removeEventListener('keydown', investigatorEscHandler);
+          investigatorEscHandler = null;
+        }
+      } else if (investigatorEscHandler) {
+        document.removeEventListener('keydown', investigatorEscHandler);
+        investigatorEscHandler = null;
       }
 
       if (state.activeSection === 'overview') {
