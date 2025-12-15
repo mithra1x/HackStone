@@ -100,6 +100,17 @@ const AI_BASELINE = {
   delete: 65
 };
 
+const TIMELINE_RANGE_MS = {
+  '24h': 24 * 60 * 60 * 1000,
+  '12h': 12 * 60 * 60 * 1000,
+  '1h': 60 * 60 * 1000,
+  '15m': 15 * 60 * 1000,
+  '5m': 5 * 60 * 1000
+};
+
+const TIMELINE_GROUP_WINDOW_MS = 2 * 60 * 1000;
+const TIMELINE_SHORT_LIVED_WINDOW_MS = 5 * 60 * 1000;
+
 function ensureDirectories() {
   [DEFAULT_WATCH_DIR, DATA_DIR, BASELINE_DIR, LOG_DIR, PUBLIC_DIR, CONFIG_DIR, STAGING_DIR].forEach((dir) => {
     if (!fs.existsSync(dir)) {
@@ -919,6 +930,201 @@ function broadcast(payload) {
   sseClients.forEach((res) => res.write(data));
 }
 
+function eventTimestampMs(evt) {
+  const ts = new Date(evt.timestamp).getTime();
+  return Number.isFinite(ts) ? ts : null;
+}
+
+function resolveTimelineRange(range) {
+  if (!range || !TIMELINE_RANGE_MS[range]) return '24h';
+  return range;
+}
+
+function pickHighestSeverity(events) {
+  return events.reduce((winner, evt) => {
+    const value = SEVERITY_RANK[evt.severity] ?? -1;
+    const winningValue = SEVERITY_RANK[winner] ?? -1;
+    return value > winningValue ? evt.severity : winner;
+  }, 'info');
+}
+
+function isScriptPath(relPath = '') {
+  const ext = path.extname(relPath).toLowerCase();
+  return ['.sh', '.ps1', '.bat', '.cmd', '.py', '.js'].includes(ext);
+}
+
+function isSensitivePath(relPath = '') {
+  const lowered = relPath.toLowerCase();
+  const sensitiveKeywords = ['.env', 'credential', 'secret', 'password', 'ssh', 'id_rsa', 'id_dsa', 'token'];
+  return sensitiveKeywords.some((kw) => lowered.includes(kw));
+}
+
+function describeActions(actions, durationMs) {
+  const sorted = Array.from(actions).sort();
+  const actionText = sorted.join(', ');
+  if (!durationMs || durationMs < 1000) return actionText;
+  const minutes = Math.max(Math.round(durationMs / 60000), 1);
+  return `${actionText} within ${minutes} min`;
+}
+
+function classifyTimelineGroup(group) {
+  const events = group.events;
+  const first = events[0];
+  const pathValue = first.path || first.file || 'unknown';
+  const actions = new Set(events.map((evt) => evt.action || evt.type));
+  const duration = group.endTs - group.startTs;
+  const hasCreate = actions.has('create');
+  const hasDelete = actions.has('delete');
+  const modifyCount = events.filter((evt) => (evt.action || evt.type) === 'modify').length;
+
+  let title = 'File activity observed';
+  let summary = `Actions: ${describeActions(actions, duration)}.`;
+  let why = first.message || 'Observed file activity.';
+  let mitre = first.mitre || null;
+
+  if (hasCreate && hasDelete && duration <= TIMELINE_SHORT_LIVED_WINDOW_MS) {
+    title = 'Short-lived file (possible staging/cleanup)';
+    summary = 'File was created and removed within minutes.';
+    why = 'Short-lived artifacts can indicate staging or cover tracks.';
+  } else if (isScriptPath(pathValue)) {
+    title = 'Script activity detected';
+    summary = `${describeActions(actions, duration)} on script-like file.`;
+    why = 'Script files are commonly used for execution and persistence.';
+    if (!mitre) mitre = { id: 'T1059', name: 'Command and Scripting Interpreter' };
+  } else if (isSensitivePath(pathValue)) {
+    title = 'Sensitive file touched';
+    summary = `${describeActions(actions, duration)} on sensitive or credential-like path.`;
+    why = 'Credentials/config changes can indicate credential access or persistence.';
+  } else if (modifyCount >= 3 && duration <= TIMELINE_GROUP_WINDOW_MS) {
+    title = 'Rapid file modifications';
+    summary = 'Burst of modifications detected in a short window.';
+    why = 'Burst changes may indicate automated activity.';
+  }
+
+  const withAssessment = events.find((evt) => evt.aiAssessment?.reason);
+  if (withAssessment && !why) {
+    why = withAssessment.aiAssessment.reason;
+  } else if (withAssessment && why && !why.includes(withAssessment.aiAssessment.reason)) {
+    why = `${why} AI assessment: ${withAssessment.aiAssessment.reason}`;
+  }
+
+  return { title, summary, why, mitre };
+}
+
+function buildTimelineEntry(group, idx) {
+  const events = group.events;
+  const first = events[0];
+  const timestampStart = new Date(group.startTs).toISOString();
+  const timestampEnd = new Date(group.endTs).toISOString();
+  const actors = {
+    source: first.source || 'local',
+    agentId: first.agentId || null,
+    user: first.user || first.metadata?.user || null
+  };
+  const artifactPath = first.path || first.file || 'unknown';
+  const actions = Array.from(new Set(events.map((evt) => evt.action || evt.type)));
+  const beforeHash = events.find((evt) => evt.beforeHash)?.beforeHash || null;
+  const afterHash = [...events].reverse().find((evt) => evt.afterHash)?.afterHash || null;
+  const { title, summary, why, mitre } = classifyTimelineGroup(group);
+
+  return {
+    id: `tl_${idx}_${crypto.randomUUID()}`,
+    start: timestampStart,
+    end: timestampEnd,
+    title,
+    summary,
+    why,
+    severity: pickHighestSeverity(events),
+    mitre: mitre || first.mitre || null,
+    actors,
+    artifacts: [
+      {
+        path: artifactPath,
+        actions,
+        beforeHash,
+        afterHash
+      }
+    ],
+    raw_event_ids: events.map((evt) => evt.id)
+  };
+}
+
+function buildTimelineStats(entries, rawCount) {
+  const pathCounts = new Map();
+  const mitreCounts = new Map();
+
+  entries.forEach((entry) => {
+    entry.artifacts.forEach((artifact) => {
+      const prev = pathCounts.get(artifact.path) || 0;
+      pathCounts.set(artifact.path, prev + 1);
+    });
+    if (entry.mitre?.id) {
+      const prev = mitreCounts.get(entry.mitre.id) || 0;
+      mitreCounts.set(entry.mitre.id, prev + 1);
+    }
+  });
+
+  const top_paths = Array.from(pathCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([pathValue, count]) => ({ path: pathValue, count }));
+
+  const top_mitre = Array.from(mitreCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([id, count]) => ({ id, count }));
+
+  return {
+    total_entries: entries.length,
+    total_raw_events: rawCount,
+    top_paths,
+    top_mitre
+  };
+}
+
+function buildTimeline(rangeParam = '24h') {
+  const range = resolveTimelineRange(rangeParam);
+  const now = Date.now();
+  const windowMs = TIMELINE_RANGE_MS[range];
+  const windowStart = now - windowMs;
+
+  const windowEvents = eventHistory
+    .map((evt) => normalizeEventShape(evt))
+    .filter((evt) => {
+      const ts = eventTimestampMs(evt);
+      return ts !== null && ts >= windowStart;
+    });
+
+  const sorted = [...windowEvents].sort((a, b) => eventTimestampMs(a) - eventTimestampMs(b));
+  const groups = [];
+  let current = null;
+
+  for (const evt of sorted) {
+    const ts = eventTimestampMs(evt);
+    if (ts === null) continue;
+    const user = evt.user || evt.metadata?.user || '';
+    const groupKey = `${evt.source || 'local'}|${evt.agentId || ''}|${user}|${evt.path || evt.file || ''}`;
+
+    if (current && current.key === groupKey && ts - current.endTs <= TIMELINE_GROUP_WINDOW_MS) {
+      current.events.push(evt);
+      current.endTs = ts;
+    } else {
+      if (current) groups.push(current);
+      current = { key: groupKey, startTs: ts, endTs: ts, events: [evt] };
+    }
+  }
+  if (current) groups.push(current);
+
+  const entries = groups.map((group, idx) => buildTimelineEntry(group, idx));
+  entries.sort((a, b) => new Date(b.end) - new Date(a.end));
+
+  return {
+    range,
+    entries,
+    stats: buildTimelineStats(entries, sorted.length)
+  };
+}
+
 function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -1222,6 +1428,14 @@ async function requestHandler(req, res) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     const events = eventHistory.map(normalizeEventShape);
     res.end(JSON.stringify({ events, baselineSize: totalBaselineEntries() }));
+    return;
+  }
+
+  if (url.pathname === '/api/timeline' && req.method === 'GET') {
+    const range = url.searchParams.get('range') || '24h';
+    const timeline = buildTimeline(range);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(timeline));
     return;
   }
 
