@@ -640,7 +640,7 @@ function applyMetadataRules(evt) {
     return evt;
   }
 
-  const pathValue = (evt.file || evt.path || '').toLowerCase();
+  const pathValue = (evt.path || evt.file || '').toLowerCase();
   const tagSet = new Set(Array.isArray(evt.tags) ? evt.tags : []);
   const matches = [];
   let finalSeverity = (evt.severity || 'info').toLowerCase();
