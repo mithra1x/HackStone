@@ -87,6 +87,11 @@
       status: 'connecting',
       baselineSize: 0,
       alert: '',
+      isAuthenticated: false,
+      authToken: null,
+      authError: '',
+      authLoading: false,
+      authChecked: false,
       activeSection: 'overview',
       sidebarOpen: false,
       selectedEvent: null,
@@ -108,9 +113,37 @@
       investigatorHoverId: null
     };
 
+    const AUTH_STORAGE_KEY = 'hackstone_auth_token';
+    let eventSource = null;
+
     let investigatorEscHandler = null;
 
     let timelineRefreshTimer = null;
+
+    const authHeaders = () => {
+      const headers = {};
+      if (state.authToken) {
+        headers['Authorization'] = `Bearer ${state.authToken}`;
+      }
+      return headers;
+    };
+
+    const persistToken = (token) => {
+      state.authToken = token;
+      if (token) {
+        localStorage.setItem(AUTH_STORAGE_KEY, token);
+      } else {
+        localStorage.removeItem(AUTH_STORAGE_KEY);
+      }
+    };
+
+    const syncRouteForAuth = () => {
+      if (!state.isAuthenticated && window.location.pathname !== '/login') {
+        window.history.replaceState({}, '', '/login');
+      } else if (state.isAuthenticated && window.location.pathname === '/login') {
+        window.history.replaceState({}, '', '/');
+      }
+    };
 
     const formatTime = (ts) => new Intl.DateTimeFormat('en', {
       dateStyle: 'medium',
@@ -1560,7 +1593,68 @@
       `;
     }
 
+    function renderLogin() {
+      return `
+        <div class="login-shell">
+          <div class="login-card">
+            <div class="login-header">
+              <div class="logo-mark">🛡️</div>
+              <div>
+                <p class="logo-title">HackStone</p>
+                <p class="logo-sub">FIM Dashboard</p>
+              </div>
+            </div>
+            <div class="login-copy">
+              <p class="title-lg">Welcome back</p>
+              <p class="lede">Sign in to continue to your monitoring dashboard.</p>
+            </div>
+            <form id="login-form" class="login-form">
+              <label class="input-label" for="login-username">Username</label>
+              <input id="login-username" name="username" class="input" type="text" autocomplete="username" required />
+              <label class="input-label" for="login-password">Password</label>
+              <input
+                id="login-password"
+                name="password"
+                class="input"
+                type="password"
+                autocomplete="current-password"
+                required
+              />
+              ${state.authError ? `<div class="banner banner-error">${state.authError}</div>` : ''}
+              <button class="primary-btn" id="login-submit" type="submit" ${state.authLoading ? 'disabled' : ''}>
+                ${state.authLoading ? 'Signing in…' : 'Sign in'}
+              </button>
+            </form>
+          </div>
+        </div>
+      `;
+    }
+
     function render() {
+      syncRouteForAuth();
+
+      if (!state.authChecked) {
+        document.getElementById('root').innerHTML = `
+          <div class="login-shell">
+            <div class="login-card loading-card">
+              <p class="title-lg">Loading…</p>
+              <p class="lede">Preparing your dashboard.</p>
+            </div>
+          </div>`;
+        return;
+      }
+
+      if (!state.isAuthenticated) {
+        document.getElementById('root').innerHTML = renderLogin();
+        const loginForm = document.getElementById('login-form');
+        if (loginForm) {
+          loginForm.addEventListener('submit', handleLoginSubmit);
+        }
+        const usernameInput = document.getElementById('login-username');
+        if (usernameInput) usernameInput.focus();
+        return;
+      }
+
       const activeElement = document.activeElement;
       const searchHadFocus = activeElement?.id === 'events-search';
       const searchSelection = searchHadFocus
@@ -1606,6 +1700,10 @@
                 <p class="eyebrow">${activeLabel}</p>
                 <h2 class="title-lg">${activeLabel}</h2>
               </div>
+              <div class="topbar-actions">
+                <span class="user-pill">${state.authUser || 'Authenticated'}</span>
+                <button class="ghost-btn" id="logout-btn" type="button">Logout</button>
+              </div>
             </header>
             <main class="main-content">
               ${renderMain(state.activeSection, counters, statusCopy, changesOverTime, riskModel, latest, filteredEvents)}
@@ -1630,7 +1728,15 @@
           state.alert = 'Rebuilding baseline…';
           render();
           try {
-            const res = await fetch('/api/rebuild', { method: 'POST' });
+            const res = await fetch('/api/rebuild', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', ...authHeaders() },
+              credentials: 'include'
+            });
+            if (res.status === 401) {
+              await handleLogout(true);
+              return;
+            }
             const data = await res.json();
             state.baselineSize = data.baselineSize || 0;
             state.alert = 'Baseline rebuilt';
@@ -1653,6 +1759,11 @@
           render();
         });
       });
+
+      const logoutBtn = document.getElementById('logout-btn');
+      if (logoutBtn) {
+        logoutBtn.addEventListener('click', handleLogout);
+      }
 
       const hamburger = document.getElementById('hamburger-btn');
       if (hamburger) {
@@ -1861,9 +1972,126 @@
       }
     }
 
-    async function loadInitial() {
+    function resetDashboardState() {
+      state.events = [];
+      state.status = 'connecting';
+      state.baselineSize = 0;
+      state.alert = '';
+      state.activeSection = 'overview';
+      state.sidebarOpen = false;
+      state.selectedEvent = null;
+      state.selectedEventForDetails = null;
+      state.eventsFilter = { query: '', mode: 'path', source: 'all', agentId: 'all' };
+      state.timeRange = '24h';
+      state.timelineScrollTop = 0;
+      state.timelineEntries = [];
+      state.timelineStats = {};
+      state.timelineRange = '24h';
+      state.investigatorRange = '24h';
+      state.investigatorGraph = { nodes: [], edges: [], range: '24h' };
+      state.investigatorSelectedNode = null;
+      state.investigatorHoverId = null;
+    }
+
+    async function handleLoginSubmit(e) {
+      e.preventDefault();
+      const formData = new FormData(e.target);
+      const username = formData.get('username');
+      const password = formData.get('password');
+
+      state.authError = '';
+      state.authLoading = true;
+      render();
+
       try {
-        const res = await fetch('/api/events');
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ username, password })
+        });
+        const data = await res.json();
+        if (!res.ok || !data?.ok || !data.token) {
+          throw new Error(data?.error || 'Login failed');
+        }
+
+        persistToken(data.token);
+        state.isAuthenticated = true;
+        state.authChecked = true;
+        state.authLoading = false;
+        state.authError = '';
+        state.authUser = username || 'Authenticated';
+        syncRouteForAuth();
+        render();
+        await loadInitial();
+        startStream();
+      } catch (err) {
+        state.authLoading = false;
+        state.authError = err.message || 'Login failed';
+        state.isAuthenticated = false;
+        persistToken(null);
+        render();
+      }
+    }
+
+    async function handleLogout(skipRequest = false) {
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+      persistToken(null);
+      resetDashboardState();
+      state.isAuthenticated = false;
+      state.authChecked = true;
+      state.authLoading = false;
+      state.authUser = '';
+      state.authError = '';
+      syncRouteForAuth();
+      render();
+      if (!skipRequest) {
+        try {
+          await fetch('/api/logout', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+            credentials: 'include'
+          });
+        } catch (err) {
+          console.warn('Logout failed', err);
+        }
+      }
+    }
+
+    async function verifyExistingSession() {
+      const storedToken = localStorage.getItem(AUTH_STORAGE_KEY);
+      if (!storedToken) {
+        state.authChecked = true;
+        render();
+        return;
+      }
+
+      persistToken(storedToken);
+      try {
+        const res = await fetch('/api/config', { headers: authHeaders(), credentials: 'include' });
+        if (!res.ok) throw new Error('Unauthorized');
+        state.isAuthenticated = true;
+        state.authChecked = true;
+        state.authError = '';
+        render();
+        await loadInitial();
+        startStream();
+      } catch (err) {
+        await handleLogout(true);
+      }
+    }
+
+    async function loadInitial() {
+      if (!state.isAuthenticated) return;
+      try {
+        const res = await fetch('/api/events', { headers: authHeaders(), credentials: 'include' });
+        if (res.status === 401) {
+          await handleLogout(true);
+          return;
+        }
         const data = await res.json();
         state.events = data.events || [];
         state.baselineSize = data.baselineSize || 0;
@@ -1877,8 +2105,13 @@
     }
 
     async function refreshEvents() {
+      if (!state.isAuthenticated) return;
       try {
-        const res = await fetch('/api/events');
+        const res = await fetch('/api/events', { headers: authHeaders(), credentials: 'include' });
+        if (res.status === 401) {
+          await handleLogout(true);
+          return;
+        }
         const data = await res.json();
         state.events = data.events || [];
       } catch (err) {
@@ -1887,8 +2120,13 @@
     }
 
     async function refreshTimeline(range = state.timelineRange) {
+      if (!state.isAuthenticated) return;
       try {
-        const res = await fetch(`/api/timeline?range=${range}`);
+        const res = await fetch(`/api/timeline?range=${range}`, { headers: authHeaders(), credentials: 'include' });
+        if (res.status === 401) {
+          await handleLogout(true);
+          return;
+        }
         const data = await res.json();
         state.timelineEntries = data.entries || [];
         state.timelineStats = data.stats || {};
@@ -1908,8 +2146,13 @@
     }
 
     async function refreshInvestigator(range = state.investigatorRange) {
+      if (!state.isAuthenticated) return;
       try {
-        const res = await fetch(`/api/investigator?range=${range}`);
+        const res = await fetch(`/api/investigator?range=${range}`, { headers: authHeaders(), credentials: 'include' });
+        if (res.status === 401) {
+          await handleLogout(true);
+          return;
+        }
         const data = await res.json();
         state.investigatorGraph = data || { nodes: [], edges: [], range };
         state.investigatorRange = data.range || range;
@@ -1929,10 +2172,16 @@
     }
 
     function startStream() {
-      const source = new EventSource('/stream');
-      source.onopen = () => { state.status = 'streaming'; render(); };
-      source.onerror = () => { state.status = 'disconnected'; render(); };
-      source.onmessage = (evt) => {
+      if (!state.isAuthenticated) return;
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+
+      eventSource = new EventSource('/stream');
+      eventSource.onopen = () => { state.status = 'streaming'; render(); };
+      eventSource.onerror = () => { state.status = 'disconnected'; render(); };
+      eventSource.onmessage = (evt) => {
         const payload = JSON.parse(evt.data);
         if (!payload.type || payload.type === 'connected') return;
         state.events.unshift(payload);
@@ -1942,8 +2191,8 @@
         render();
       };
     }
-
-    loadInitial().then(startStream);
+    
+    verifyExistingSession();
   </script>
 </body>
 </html>
