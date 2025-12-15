@@ -123,6 +123,14 @@
       hour12: false
     }).format(new Date(ts));
 
+    const escapeHtml = (value) =>
+      String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
     const formatDateShort = (ts) => new Intl.DateTimeFormat('en', {
       month: 'short',
       day: 'numeric'
@@ -1192,8 +1200,8 @@
         target: graph.nodes.filter((n) => n.kind === 'target')
       };
 
-      const columnX = { actor: 120, event: 420, target: 720 };
-      const spacing = 88;
+      const columnX = { actor: 120, event: 400, target: 680 };
+      const spacing = 64;
 
       const placements = {};
       Object.entries(nodesByKind).forEach(([kind, list]) => {
@@ -1204,7 +1212,7 @@
         sortedList.forEach((node, idx) => {
           placements[node.id] = {
             x: columnX[kind],
-            y: 70 + idx * spacing,
+            y: 60 + idx * spacing,
             node
           };
         });
@@ -1212,10 +1220,47 @@
 
       const height = Math.max(
         360,
-        ...Object.values(nodesByKind).map((list) => 70 + list.length * spacing)
+        ...Object.values(nodesByKind).map((list) => 60 + list.length * spacing)
       );
 
       return { placements, height };
+    }
+
+    const getEventTimestamp = (node) => {
+      if (!node) return null;
+      const raw = node.timestamp || node.meta?.timestamp;
+      const ts = raw ? new Date(raw).getTime() : NaN;
+      return Number.isNaN(ts) ? null : ts;
+    };
+
+    const buildGraphNodeMap = (graph) =>
+      (graph?.nodes || []).reduce((acc, n) => {
+        acc[n.id] = n;
+        return acc;
+      }, {});
+
+    function getConnectedEvents(node, graph, direction = 'both', limit = 10) {
+      if (!node || !graph) return [];
+      const nodeMap = buildGraphNodeMap(graph);
+      const seen = new Set();
+      const list = [];
+      (graph.edges || []).forEach((edge) => {
+        const matches =
+          direction === 'out'
+            ? edge.from === node.id
+            : direction === 'in'
+              ? edge.to === node.id
+              : edge.from === node.id || edge.to === node.id;
+        if (!matches) return;
+        const otherId = edge.from === node.id ? edge.to : edge.from;
+        const otherNode = nodeMap[otherId];
+        if (otherNode?.kind === 'event' && !seen.has(otherNode.id)) {
+          seen.add(otherNode.id);
+          list.push(otherNode);
+        }
+      });
+      list.sort((a, b) => (getEventTimestamp(b) || 0) - (getEventTimestamp(a) || 0));
+      return list.slice(0, limit);
     }
 
     function renderInvestigatorDetails(node, graph) {
@@ -1226,17 +1271,28 @@
         const pathValue = meta.path || meta.file || 'unknown';
         const mitreLabel = meta.mitre?.id || meta.mitre?.technique_id || meta.mitre?.name || 'Unmapped';
         const fields = [
+          ['Timestamp', meta.timestamp ? formatTime(meta.timestamp) : '—'],
           ['Action', node.label || meta.action || meta.type || 'event'],
           ['Path', pathValue],
-          ['Timestamp', meta.timestamp ? formatTime(meta.timestamp) : '—'],
-          ['Severity', meta.severity || 'info'],
-          ['User', meta.user || meta.metadata?.user || 'n/a'],
+          ['Severity', meta.severity || node.severity || 'info'],
+          ['MITRE', mitreLabel],
+          ['Message', meta.message || '—'],
           ['Source', meta.source || 'local'],
           ['Agent', meta.agentId || 'n/a'],
+          ['User', meta.user || meta.metadata?.user || 'n/a'],
           ['Before hash', meta.beforeHash || '—'],
-          ['After hash', meta.afterHash || '—'],
-          ['MITRE', mitreLabel]
+          ['After hash', meta.afterHash || '—']
         ];
+
+        const ai = meta.aiAssessment
+          ? `<div class="banner mt-3">AI ${meta.aiAssessment.label || 'assessment'}${
+              meta.aiAssessment.score ? ` (${meta.aiAssessment.score})` : ''
+            }: ${meta.aiAssessment.reason || meta.aiAssessment.summary || ''}</div>`
+          : '';
+
+        const rawJson = `<details class="mt-3"><summary class="text-muted">Raw JSON</summary><pre class="code-scroll">${escapeHtml(
+          JSON.stringify(meta, null, 2)
+        )}</pre></details>`;
 
         return `
           <div class="investigator-panel">
@@ -1254,24 +1310,22 @@
                 )
                 .join('')}
             </div>
-            ${meta.aiAssessment?.reason ? `<div class="banner mt-4">AI: ${meta.aiAssessment.reason}</div>` : ''}
             ${meta.metadata ? renderMetadata(meta.metadata) : ''}
+            ${ai}
+            ${rawJson}
           </div>
         `;
       }
 
       if (node.kind === 'target') {
-        const relatedEdges = (graph?.edges || []).filter((edge) => edge.to === node.id);
-        const relatedEvents = relatedEdges
-          .map((edge) => graph.nodes.find((n) => n.id === edge.from))
-          .filter((n) => n && n.kind === 'event')
-          .slice(0, 6);
+        const relatedEvents = getConnectedEvents(node, graph, 'in', 10);
+        const countLabel = `${relatedEvents.length} connected event${relatedEvents.length === 1 ? '' : 's'}`;
 
         return `
           <div class="investigator-panel">
             <p class="eyebrow">Target</p>
             <h3 class="title-md" title="${node.meta?.path || ''}">${node.label}</h3>
-            <p class="text-muted">Recent activity touching this file.</p>
+            <p class="text-muted">${countLabel}</p>
             <div class="investigator-list">
               ${
                 relatedEvents.length
@@ -1281,8 +1335,10 @@
                           <div class="investigator-row">
                             <div class="pill">${evt.label || evt.meta?.action || evt.meta?.type}</div>
                             <div class="grow">
-                              <p class="detail-label">${formatTimeShort(evt.timestamp || evt.meta?.timestamp || Date.now())}</p>
-                              <p class="detail-value">${evt.meta?.user || evt.meta?.agentId || 'actor'}</p>
+                              <p class="detail-label">${evt.meta?.path || evt.meta?.file || 'target'}</p>
+                              <p class="detail-value">${formatTimeShort(
+                                getEventTimestamp(evt) || Date.now()
+                              )}</p>
                             </div>
                             <span class="severity-pill severity-${evt.severity || 'info'}">${(evt.severity || 'info').toUpperCase()}</span>
                           </div>
@@ -1298,12 +1354,14 @@
 
       if (node.kind === 'actor') {
         const meta = node.meta || {};
-        const relatedCount = (graph?.edges || []).filter((edge) => edge.from === node.id || edge.to === node.id).length;
+        const relatedEvents = getConnectedEvents(node, graph, 'out', 10);
+        const countLabel = `${relatedEvents.length} connected event${relatedEvents.length === 1 ? '' : 's'}`;
+
         return `
           <div class="investigator-panel">
             <p class="eyebrow">Actor</p>
             <h3 class="title-md">${node.label}</h3>
-            <p class="text-muted">Source of observed file events (${relatedCount || 0} links).</p>
+            <p class="text-muted">${countLabel}</p>
             <div class="details-grid">
               ${['source', 'agentId', 'user']
                 .map(
@@ -1314,6 +1372,26 @@
                     </div>`
                 )
                 .join('')}
+            </div>
+            <div class="investigator-list">
+              ${
+                relatedEvents.length
+                  ? relatedEvents
+                      .map(
+                        (evt) => `
+                          <div class="investigator-row">
+                            <div class="pill">${evt.label || evt.meta?.action || evt.meta?.type}</div>
+                            <div class="grow">
+                              <p class="detail-label">${evt.meta?.path || evt.meta?.file || 'unknown path'}</p>
+                              <p class="detail-value">${formatTimeShort(getEventTimestamp(evt) || Date.now())}</p>
+                            </div>
+                            <span class="severity-pill severity-${evt.severity || 'info'}">${(evt.severity || 'info').toUpperCase()}</span>
+                          </div>
+                        `
+                      )
+                      .join('')
+                  : '<p class="text-muted">No connected events yet.</p>'
+              }
             </div>
           </div>
         `;
@@ -1340,8 +1418,9 @@
         });
       }
 
-      const nodeWidth = 160;
-      const nodeHeight = 50;
+      const nodeWidth = 148;
+      const nodeHeight = 44;
+      const viewWidth = 860;
 
       const edges = graph.edges
         .map((edge) => {
@@ -1352,8 +1431,8 @@
           const endX = to.x - nodeWidth / 2;
           const startY = from.y;
           const endY = to.y;
-          const control1X = startX + 64;
-          const control2X = endX - 64;
+          const control1X = startX + 52;
+          const control2X = endX - 52;
           const active = activeIds.size ? activeIds.has(edge.from) && activeIds.has(edge.to) : true;
           const dimmed = activeIds.size && !active;
           return `
@@ -1383,7 +1462,7 @@
         .join('');
 
       return `
-        <svg class="investigator-graph" viewBox="0 0 900 ${height}" role="img" aria-label="Investigation graph">
+        <svg class="investigator-graph" viewBox="0 0 ${viewWidth} ${height}" role="img" aria-label="Investigation graph">
           ${edges}
           ${nodes}
         </svg>
