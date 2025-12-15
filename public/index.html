@@ -38,6 +38,7 @@
     const navItems = [
       { id: 'overview', label: 'Overview', icon: '📊' },
       { id: 'alertsConsole', label: 'Alerts Console', icon: '🚨' },
+      { id: 'timeline', label: 'Timeline', icon: '🕒' },
       { id: 'charts', label: 'Charts', icon: '📈' },
       { id: 'settings', label: 'Settings', icon: '⚙️' }
     ];
@@ -96,12 +97,28 @@
         agentId: 'all'
       },
       timeRange: '24h',
-      timelineScrollTop: 0
+      timelineScrollTop: 0,
+      timelineEntries: [],
+      timelineStats: {},
+      timelineRange: '24h'
     };
+
+    let timelineRefreshTimer = null;
 
     const formatTime = (ts) => new Intl.DateTimeFormat('en', {
       dateStyle: 'medium',
       timeStyle: 'medium'
+    }).format(new Date(ts));
+
+    const formatTimeShort = (ts) => new Intl.DateTimeFormat('en', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    }).format(new Date(ts));
+
+    const formatDateShort = (ts) => new Intl.DateTimeFormat('en', {
+      month: 'short',
+      day: 'numeric'
     }).format(new Date(ts));
 
     const getMetadata = (evt) => {
@@ -1064,6 +1081,103 @@
       `;
     }
 
+    function renderTimelineEntries(entries) {
+      if (!entries.length) {
+        return '<p class="text-muted">No timeline entries in this window.</p>';
+      }
+
+      return entries.map((entry) => {
+        const startLabel = `${formatDateShort(entry.start)} ${formatTimeShort(entry.start)}`;
+        const endLabel = formatTimeShort(entry.end);
+        const mitreLabel = entry.mitre?.id ? `MITRE ${entry.mitre.id}` : 'Unmapped';
+        const actions = entry.artifacts?.[0]?.actions?.join(', ') || '';
+        const artifactPath = entry.artifacts?.[0]?.path || 'unknown';
+        const beforeHash = entry.artifacts?.[0]?.beforeHash;
+        const afterHash = entry.artifacts?.[0]?.afterHash;
+
+        return `
+          <article class="timeline-card">
+            <div class="timeline-card-head">
+              <div>
+                <p class="eyebrow">${startLabel} – ${endLabel}</p>
+                <h3 class="title-md">${entry.title || 'Activity detected'}</h3>
+                <p class="text-muted">${entry.summary || ''}</p>
+              </div>
+              <div class="timeline-badges">
+                <span class="severity-pill severity-${entry.severity || 'info'}">${(entry.severity || 'info').toUpperCase()}</span>
+                <span class="pill">${mitreLabel}</span>
+              </div>
+            </div>
+            <p class="timeline-why">${entry.why || 'File activity noted.'}</p>
+            <div class="timeline-meta">
+              <span>Path: <code>${artifactPath}</code></span>
+              <span>Actions: ${actions || 'n/a'}</span>
+              <span>Actor: ${entry.actors?.user || entry.actors?.agentId || entry.actors?.source || 'unknown'}</span>
+            </div>
+            <details class="timeline-details">
+              <summary>Details</summary>
+              <ul>
+                <li><strong>Start</strong>: ${formatTime(entry.start)}</li>
+                <li><strong>End</strong>: ${formatTime(entry.end)}</li>
+                <li><strong>Hashes</strong>: ${beforeHash || 'n/a'} → ${afterHash || 'n/a'}</li>
+                <li><strong>Raw events</strong>: ${entry.raw_event_ids?.length || 0}</li>
+              </ul>
+            </details>
+          </article>
+        `;
+      }).join('');
+    }
+
+    function renderTimelineStats(stats = {}) {
+      const topPaths = (stats.top_paths || []).map((p) => `<li><code>${p.path}</code> (${p.count})</li>`).join('');
+      const topMitre = (stats.top_mitre || []).map((m) => `<li>${m.id} (${m.count})</li>`).join('');
+      return `
+        <div class="timeline-stats">
+          <div>
+            <p class="stat-title">Entries</p>
+            <p class="stat-value">${stats.total_entries || 0}</p>
+          </div>
+          <div>
+            <p class="stat-title">Raw events</p>
+            <p class="stat-value">${stats.total_raw_events || 0}</p>
+          </div>
+          <div>
+            <p class="stat-title">Top paths</p>
+            <ul class="tiny-list">${topPaths || '<li>n/a</li>'}</ul>
+          </div>
+          <div>
+            <p class="stat-title">Top MITRE</p>
+            <ul class="tiny-list">${topMitre || '<li>n/a</li>'}</ul>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderTimelineSection(entries, stats) {
+      return `
+        <div class="stack gap-4">
+          <div class="toolbar card px-4 py-3">
+            <div>
+              <p class="eyebrow">Attacker Timeline</p>
+              <h2 class="title-lg">Story of activity</h2>
+              <p class="text-muted">Chronological grouping of file changes with security context.</p>
+            </div>
+            <div class="flex items-center gap-4">
+              <label class="text-muted" for="timeline-range">Range</label>
+              <select id="timeline-range" class="select timeline-range">
+                ${Object.keys(timeRangeConfig).map((k) => `<option value="${k}" ${state.timelineRange === k ? 'selected' : ''}>${k}</option>`).join('')}
+              </select>
+              <button class="btn ghost" id="timeline-refresh">Refresh</button>
+            </div>
+          </div>
+          <div class="card timeline-card-wrap">
+            ${renderTimelineStats(stats)}
+            <div class="timeline-feed">${renderTimelineEntries(entries)}</div>
+          </div>
+        </div>
+      `;
+    }
+
     function renderMain(activeSection, counters, statusCopy, changesOverTime, riskModel, latest, filteredEvents) {
       switch (activeSection) {
         case 'alertsConsole':
@@ -1074,6 +1188,8 @@
           );
         case 'charts':
           return renderChartsSection(changesOverTime, riskModel);
+        case 'timeline':
+          return renderTimelineSection(state.timelineEntries, state.timelineStats);
         case 'settings':
           return renderSettingsSection(statusCopy);
         case 'eventDetails':
@@ -1250,6 +1366,23 @@
           });
         }
 
+        const timelineRangeSelect = document.getElementById('timeline-range');
+        if (timelineRangeSelect) {
+          timelineRangeSelect.addEventListener('change', async (e) => {
+            state.timelineRange = e.target.value;
+            await refreshTimeline(state.timelineRange);
+            render();
+          });
+        }
+
+        const timelineRefreshBtn = document.getElementById('timeline-refresh');
+        if (timelineRefreshBtn) {
+          timelineRefreshBtn.addEventListener('click', async () => {
+            await refreshTimeline(state.timelineRange);
+            render();
+          });
+        }
+
         const rangeSelects = document.querySelectorAll('.range-select');
         rangeSelects.forEach((select) => {
           select.addEventListener('change', (e) => {
@@ -1329,6 +1462,7 @@
       } catch (err) {
         state.status = 'error';
       }
+      await refreshTimeline(state.timelineRange);
       render();
     }
 
@@ -1342,6 +1476,27 @@
       }
     }
 
+    async function refreshTimeline(range = state.timelineRange) {
+      try {
+        const res = await fetch(`/api/timeline?range=${range}`);
+        const data = await res.json();
+        state.timelineEntries = data.entries || [];
+        state.timelineStats = data.stats || {};
+        state.timelineRange = data.range || range;
+      } catch (err) {
+        console.error('Timeline refresh failed', err);
+      }
+    }
+
+    function scheduleTimelineRefresh() {
+      if (timelineRefreshTimer) return;
+      timelineRefreshTimer = setTimeout(async () => {
+        timelineRefreshTimer = null;
+        await refreshTimeline(state.timelineRange);
+        render();
+      }, 1500);
+    }
+
     function startStream() {
       const source = new EventSource('/stream');
       source.onopen = () => { state.status = 'streaming'; render(); };
@@ -1351,6 +1506,7 @@
         if (!payload.type || payload.type === 'connected') return;
         state.events.unshift(payload);
         state.events = state.events.slice(0, 200);
+        scheduleTimelineRefresh();
         render();
       };
     }
