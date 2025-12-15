@@ -8,6 +8,7 @@
   --green: #22c55e;
   --amber: #f59e0b;
   --red: #ef4444;
+  --rose: #e11d48;
   --slate: #1e293b;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
 }
@@ -227,7 +228,6 @@ body {
   border: 1px solid rgba(148, 163, 184, 0.7);
   background: rgba(15, 23, 42, 0.9);
 }
-.ai-critical { border-color: rgba(239, 68, 68, 0.8); background: rgba(127, 29, 29, 0.6); }
 .ai-elevated { border-color: rgba(245, 158, 11, 0.8); background: rgba(120, 53, 15, 0.6); }
 .ai-watch { border-color: rgba(56, 189, 248, 0.8); background: rgba(30, 64, 175, 0.6); }
 .ai-stable { border-color: rgba(22, 163, 74, 0.8); background: rgba(20, 83, 45, 0.6); }

@@ -13,6 +13,7 @@ const PUBLIC_DIR = path.join(ROOT, 'public');
 const CONFIG_DIR = path.join(ROOT, 'config');
 const STAGING_DIR = path.join(ROOT, 'staging');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'server_config.json');
+const METADATA_RULES_FILE = path.join(CONFIG_DIR, 'metadata_rules.json');
 const LEGACY_BASELINE_FILE = path.join(DATA_DIR, 'baseline.json');
 const LOCAL_BASELINE_ID = 'local';
 const LOG_FILE = path.join(LOG_DIR, 'fim.log');
@@ -62,6 +63,30 @@ const SUPPRESS_WINDOW_SECONDS = 10;
 const SUPPRESS_THRESHOLD = 5;
 const SUPPRESSION_STALE_MS = 5 * 60 * 1000;
 const suppressionTracker = new Map();
+let metadataRules = [];
+const EVENT_BUFFER_LIMIT = 500;
+
+const DEFAULT_METADATA_RULES = [
+  {
+    description: 'Credentials and secrets',
+    match: {
+      path_keywords: [
+        'secret',
+        'password',
+        'passwd',
+        'credential',
+        'token',
+        'apikey',
+        'api_key',
+        'private_key'
+      ]
+    },
+    severity: 'high',
+    tags: ['credentials', 'sensitive']
+  }
+];
+
+const SEVERITY_RANK = { info: 0, low: 1, medium: 2, high: 3 };
 
 const MITRE_LOOKUP = {
   create: { id: 'T1587', name: 'Develop Capabilities' },
@@ -89,6 +114,14 @@ function ensureDirectories() {
 function sanitizeBaselineId(id) {
   if (!id) return 'unknown';
   return String(id).replace(/[^A-Za-z0-9._-]/g, '_');
+}
+
+function sanitizeForFilename(name) {
+  if (!name) return 'unknown';
+  return String(name)
+    .replace(/[^A-Za-z0-9._-]/g, '_')
+    .replace(/_{2,}/g, '_')
+    .slice(0, 120);
 }
 
 function baselineFilePath(baselineId) {
@@ -162,6 +195,44 @@ function loadServerConfig() {
 
   console.log('Watching paths:', watchPaths.join(', '));
   console.log('Ignore patterns:', patterns.join(', '));
+}
+
+function severityRankValue(severity) {
+  return SEVERITY_RANK[(severity || '').toLowerCase()] ?? -1;
+}
+
+function normalizeRule(rule) {
+  const match = rule.match || {};
+  const normalizeArray = (val) => (Array.isArray(val) ? val : []).map((v) => String(v).toLowerCase());
+  const path_keywords = normalizeArray(match.path_keywords);
+  const path_patterns = normalizeArray(match.path_patterns);
+  const extensions = normalizeArray(match.extensions);
+
+  return {
+    description: rule.description || 'unnamed rule',
+    match: { path_keywords, path_patterns, extensions },
+    severity: (rule.severity || '').toLowerCase() || null,
+    tags: Array.isArray(rule.tags) ? rule.tags : [],
+    mitre: rule.mitre || null
+  };
+}
+
+function loadMetadataRules() {
+  if (!fs.existsSync(METADATA_RULES_FILE)) {
+    fs.writeFileSync(METADATA_RULES_FILE, JSON.stringify(DEFAULT_METADATA_RULES, null, 2));
+    console.log('Created default config/metadata_rules.json');
+  }
+
+  try {
+    const content = fs.readFileSync(METADATA_RULES_FILE, 'utf-8');
+    const parsed = JSON.parse(content || '[]');
+    if (!Array.isArray(parsed)) throw new Error('metadata_rules.json must contain an array');
+    metadataRules = parsed.map(normalizeRule);
+    console.log(`Loaded ${metadataRules.length} metadata rules`);
+  } catch (err) {
+    console.warn('Failed to load metadata_rules.json; continuing with no rules:', err.message);
+    metadataRules = [];
+  }
 }
 
 function globToRegex(glob) {
@@ -563,9 +634,131 @@ function ensureMetadataObject(meta) {
   return normalized || emptyMetadata();
 }
 
+function applyMetadataRules(evt) {
+  if (!metadataRules.length) {
+    evt.rule_matches = [];
+    return evt;
+  }
+
+  const pathValue = (evt.path || evt.file || '').toLowerCase();
+  const tagSet = new Set(Array.isArray(evt.tags) ? evt.tags : []);
+  const matches = [];
+  let finalSeverity = (evt.severity || 'info').toLowerCase();
+  let finalSeverityRank = severityRankValue(finalSeverity);
+  let mitreCandidate = null;
+  let mitreCandidateRank = -1;
+
+  for (const rule of metadataRules) {
+    const match = rule.match || {};
+    const hasKeywordMatch = (match.path_keywords || []).some((kw) => pathValue.includes(kw));
+    const hasPatternMatch = (match.path_patterns || []).some((ptn) => pathValue.includes(ptn));
+    const hasExtensionMatch = (match.extensions || []).some((ext) => pathValue.endsWith(ext));
+    const matched = hasKeywordMatch || hasPatternMatch || hasExtensionMatch;
+
+    if (!matched) continue;
+
+    matches.push(rule.description);
+    (rule.tags || []).forEach((t) => tagSet.add(t));
+
+    const ruleRank = severityRankValue(rule.severity);
+    if (ruleRank > finalSeverityRank) {
+      finalSeverity = rule.severity;
+      finalSeverityRank = ruleRank;
+    }
+
+    if (rule.mitre && ruleRank >= mitreCandidateRank) {
+      mitreCandidate = rule.mitre;
+      mitreCandidateRank = ruleRank;
+    }
+  }
+
+  evt.severity = finalSeverity;
+  if (mitreCandidate) {
+    evt.mitre = mitreCandidate;
+  }
+  const uniqueTags = Array.from(tagSet).filter(Boolean);
+  if (uniqueTags.length) {
+    evt.tags = uniqueTags;
+  }
+  evt.rule_matches = matches;
+  return evt;
+}
+
+async function applyQuarantine(evt) {
+  const baseQuarantine = { recommended: false, performed: false, staged_path: null, error: null };
+  if (evt.severity !== 'high') {
+    return { quarantine: baseQuarantine, message: null };
+  }
+
+  if (evt.source === 'agent') {
+    return {
+      quarantine: { ...baseQuarantine, recommended: true, performed: false, reason: 'remote_event' },
+      message: 'Quarantine recommended on agent host.'
+    };
+  }
+
+  const copyResult = await stageLocalFileCopy(evt);
+  return {
+    quarantine: {
+      ...baseQuarantine,
+      recommended: true,
+      performed: copyResult.performed,
+      staged_path: copyResult.staged_path,
+      error: copyResult.error
+    },
+    message: copyResult.error ? 'Quarantine copy attempted; review error details.' : 'Quarantine copy stored in staging.'
+  };
+}
+
+async function stageLocalFileCopy(evt) {
+  const defaultResult = { performed: false, staged_path: null, error: null, message: null };
+  const relPath = evt.file || evt.path;
+  if (!relPath) {
+    return { ...defaultResult, error: 'No file path available for quarantine copy' };
+  }
+
+  const absolute = path.isAbsolute(relPath) ? path.normalize(relPath) : path.join(ROOT, relPath);
+  const normalizedRoot = path.normalize(ROOT + path.sep);
+  if (!absolute.startsWith(normalizedRoot)) {
+    return { ...defaultResult, error: 'Source path resolved outside workspace; skipping copy' };
+  }
+
+  const timestamp = (evt.timestamp || new Date().toISOString()).replace(/[:.]/g, '-');
+  const safeBase = sanitizeForFilename(path.basename(relPath) || 'file');
+  const destName = `${timestamp}__local__${safeBase}`;
+  const destPath = path.join(STAGING_DIR, destName);
+
+  try {
+    await fs.promises.access(absolute, fs.constants.R_OK);
+  } catch (err) {
+    const missingErr = err && err.code === 'ENOENT';
+    return { ...defaultResult, error: missingErr ? 'file not found' : err.message };
+  }
+
+  try {
+    await fs.promises.copyFile(absolute, destPath);
+    const relStaged = path.relative(ROOT, destPath).replace(/\\/g, '/');
+    return { ...defaultResult, performed: true, staged_path: relStaged };
+  } catch (err) {
+    return { ...defaultResult, error: err.message };
+  }
+}
+
 function metadataHasValues(meta) {
   if (!meta) return false;
   return Object.values(meta).some((value) => value !== null);
+}
+
+function normalizeEventShape(evt) {
+  if (!evt) return evt;
+  const normalized = { ...evt };
+  if (!normalized.path) {
+    normalized.path = normalized.file || normalized.path || null;
+  }
+  if (!normalized.action) {
+    normalized.action = normalized.type || normalized.action || null;
+  }
+  return normalized;
 }
 
 async function processAndBroadcastEvent(rawEvent, sourceMeta = {}) {
@@ -598,10 +791,14 @@ async function processAndBroadcastEvent(rawEvent, sourceMeta = {}) {
   const chosenMetadata = metadataHasValues(incomingMeta) ? incomingMeta : baselineMeta || incomingMeta;
   const metadata = ensureMetadataObject(chosenMetadata);
 
+  const pathValue = rawEvent.path || file;
+  const actionValue = rawEvent.action || kind;
+
   const evt = {
     id: rawEvent.id || crypto.randomUUID(),
     type: kind,
     file,
+    path: pathValue,
     timestamp,
     beforeHash,
     afterHash,
@@ -621,8 +818,19 @@ async function processAndBroadcastEvent(rawEvent, sourceMeta = {}) {
     size: rawEvent.size ?? metadata.size ?? null,
     mtime: rawEvent.mtime ?? metadata.mtime ?? null,
     ctime: rawEvent.ctime ?? metadata.ctime ?? null,
-    extra: rawEvent.extra ?? rawEvent.metadata ?? null
+    extra: rawEvent.extra ?? rawEvent.metadata ?? null,
+    action: actionValue
   };
+
+  applyMetadataRules(evt);
+
+  const quarantineResult = await applyQuarantine(evt);
+  if (quarantineResult) {
+    evt.quarantine = quarantineResult.quarantine;
+    if (quarantineResult.message) {
+      evt.message = `${evt.message} ${quarantineResult.message}`.trim();
+    }
+  }
 
   await updateBaselineFromEvent(baselineId, file, kind, afterHash, metadata);
 
@@ -688,10 +896,22 @@ function buildAiAssessment(kind, rel, before, after) {
 }
 
 function pushEvent(evt) {
-  eventHistory.unshift(evt);
-  eventHistory = eventHistory.slice(0, 200);
-  logEvent(evt);
-  broadcast(evt);
+  const normalized = normalizeEventShape(evt);
+  storeEventInHistory(normalized);
+}
+
+function storeEventInHistory(evt, { skipLog = false, skipBroadcast = false } = {}) {
+  const normalized = normalizeEventShape(evt);
+  eventHistory.unshift(normalized);
+  if (eventHistory.length > EVENT_BUFFER_LIMIT) {
+    eventHistory = eventHistory.slice(0, EVENT_BUFFER_LIMIT);
+  }
+  if (!skipLog) {
+    logEvent(normalized);
+  }
+  if (!skipBroadcast) {
+    broadcast(normalized);
+  }
 }
 
 function broadcast(payload) {
@@ -1000,7 +1220,8 @@ async function requestHandler(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname === '/api/events' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ events: eventHistory, baselineSize: totalBaselineEntries() }));
+    const events = eventHistory.map(normalizeEventShape);
+    res.end(JSON.stringify({ events, baselineSize: totalBaselineEntries() }));
     return;
   }
 
@@ -1085,6 +1306,7 @@ async function requestHandler(req, res) {
 async function bootstrap() {
   ensureDirectories();
   loadServerConfig();
+  loadMetadataRules();
   await loadBaseline();
   await loadAgentRegistry();
   setupWatcher();

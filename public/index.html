@@ -456,7 +456,7 @@
       const severityScore = { high: 72, medium: 52, info: 28 };
       const base = severityScore[evt.severity] || 24;
       let label = 'Stable';
-      if (base >= 70) label = 'Critical';
+      if (base >= 70) label = 'High';
       else if (base >= 55) label = 'Elevated';
       else if (base >= 35) label = 'Watch';
       return { score: base, label, reason: 'derived from severity only' };
@@ -890,6 +890,7 @@
             ['SHA-256', evt.sha256 || evt.hash || evt.afterHash || '—'],
             ['MD5', evt.md5 || '—'],
             ['Classification / tags', evt.data_classification || evt.tags?.join?.(', ') || '—'],
+            ['Rule matches', evt.rule_matches?.length ? evt.rule_matches.join(', ') : '—'],
             ['MITRE mapping', mitreValue],
             ['AI risk score', ai ? `${ai.label} · ${ai.score}` : '—'],
             ['Previous hash', evt.beforeHash || '—'],
@@ -898,6 +899,15 @@
             ['Rule', evt.rule_id || '—']
           ]
         : [];
+
+      if (evt?.quarantine) {
+        const q = evt.quarantine;
+        details.push(['Quarantine recommended', q.recommended ? 'Yes' : 'No']);
+        details.push(['Quarantine performed', q.performed ? 'Yes' : 'No']);
+        details.push(['Staged path', q.staged_path || '—']);
+        if (q.reason) details.push(['Quarantine reason', q.reason]);
+        if (q.error) details.push(['Quarantine error', q.error]);
+      }
 
       return `
         <div class="stack gap-4">
