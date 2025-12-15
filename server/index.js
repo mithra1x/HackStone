@@ -110,6 +110,7 @@ const TIMELINE_RANGE_MS = {
 
 const TIMELINE_GROUP_WINDOW_MS = 2 * 60 * 1000;
 const TIMELINE_SHORT_LIVED_WINDOW_MS = 5 * 60 * 1000;
+const INVESTIGATOR_EVENT_LIMIT = 200;
 
 function ensureDirectories() {
   [DEFAULT_WATCH_DIR, DATA_DIR, BASELINE_DIR, LOG_DIR, PUBLIC_DIR, CONFIG_DIR, STAGING_DIR].forEach((dir) => {
@@ -1125,6 +1126,98 @@ function buildTimeline(rangeParam = '24h') {
   };
 }
 
+function hashValue(value) {
+  return crypto.createHash('sha1').update(String(value || 'unknown')).digest('hex');
+}
+
+function buildActorNode(evt) {
+  const source = evt.source || 'local';
+  const agentId = evt.agentId || 'local';
+  const user = evt.user || evt.metadata?.user || '';
+  const label =
+    source === 'agent'
+      ? user
+        ? `Agent ${agentId} (${user})`
+        : `Agent ${agentId}`
+      : user
+        ? `${user} (Local Host)`
+        : 'Local Host';
+
+  const key = `${source}|${agentId}|${user || 'unknown'}`;
+  return {
+    id: `actor:${hashValue(key)}`,
+    kind: 'actor',
+    label,
+    meta: { source, agentId, user }
+  };
+}
+
+function buildTargetNode(pathValue) {
+  const key = hashValue(pathValue || 'unknown');
+  return {
+    id: `file:${key}`,
+    kind: 'target',
+    label: pathValue || 'unknown',
+    meta: { path: pathValue || 'unknown' }
+  };
+}
+
+function buildInvestigatorGraph(rangeParam = '24h') {
+  const range = resolveTimelineRange(rangeParam);
+  const now = Date.now();
+  const windowMs = TIMELINE_RANGE_MS[range];
+  const windowStart = now - windowMs;
+
+  const windowEvents = eventHistory
+    .map((evt) => normalizeEventShape(evt))
+    .filter((evt) => {
+      const ts = eventTimestampMs(evt);
+      return ts !== null && ts >= windowStart;
+    })
+    .sort((a, b) => eventTimestampMs(a) - eventTimestampMs(b));
+
+  const limitedEvents = windowEvents.slice(Math.max(0, windowEvents.length - INVESTIGATOR_EVENT_LIMIT));
+
+  const actorMap = new Map();
+  const targetMap = new Map();
+  const nodes = [];
+  const edges = [];
+
+  for (const evt of limitedEvents) {
+    const actorNode = buildActorNode(evt);
+    if (!actorMap.has(actorNode.id)) {
+      actorMap.set(actorNode.id, actorNode);
+    }
+
+    const targetPath = evt.path || evt.file || 'unknown';
+    const targetNode = buildTargetNode(targetPath);
+    if (!targetMap.has(targetNode.id)) {
+      targetMap.set(targetNode.id, targetNode);
+    }
+
+    const eventNode = {
+      id: `event:${evt.id}`,
+      kind: 'event',
+      label: evt.action || evt.type || 'event',
+      timestamp: evt.timestamp || null,
+      severity: evt.severity || 'info',
+      mitre: evt.mitre || null,
+      meta: { ...evt }
+    };
+
+    nodes.push(eventNode);
+
+    edges.push({ from: actorNode.id, to: eventNode.id, kind: 'performed' });
+    edges.push({ from: eventNode.id, to: targetNode.id, kind: 'affected' });
+  }
+
+  return {
+    range,
+    nodes: [...actorMap.values(), ...nodes, ...targetMap.values()],
+    edges
+  };
+}
+
 function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -1436,6 +1529,14 @@ async function requestHandler(req, res) {
     const timeline = buildTimeline(range);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(timeline));
+    return;
+  }
+
+  if (url.pathname === '/api/investigator' && req.method === 'GET') {
+    const range = url.searchParams.get('range') || '24h';
+    const graph = buildInvestigatorGraph(range);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(graph));
     return;
   }
 

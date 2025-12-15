@@ -39,6 +39,7 @@
       { id: 'overview', label: 'Overview', icon: '📊' },
       { id: 'alertsConsole', label: 'Alerts Console', icon: '🚨' },
       { id: 'timeline', label: 'Timeline', icon: '🕒' },
+      { id: 'investigator', label: 'Investigator', icon: '🕵️' },
       { id: 'charts', label: 'Charts', icon: '📈' },
       { id: 'settings', label: 'Settings', icon: '⚙️' }
     ];
@@ -100,7 +101,11 @@
       timelineScrollTop: 0,
       timelineEntries: [],
       timelineStats: {},
-      timelineRange: '24h'
+      timelineRange: '24h',
+      investigatorRange: '24h',
+      investigatorGraph: { nodes: [], edges: [], range: '24h' },
+      investigatorSelectedNode: null,
+      investigatorHoverId: null
     };
 
     let timelineRefreshTimer = null;
@@ -1178,6 +1183,239 @@
       `;
     }
 
+    function layoutInvestigatorGraph(graph) {
+      const nodesByKind = {
+        actor: graph.nodes.filter((n) => n.kind === 'actor'),
+        event: graph.nodes.filter((n) => n.kind === 'event'),
+        target: graph.nodes.filter((n) => n.kind === 'target')
+      };
+
+      const columnX = { actor: 100, event: 380, target: 660 };
+      const spacing = 110;
+
+      const placements = {};
+      Object.entries(nodesByKind).forEach(([kind, list]) => {
+        const sortedList = [...list];
+        if (kind === 'event') {
+          sortedList.sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
+        }
+        sortedList.forEach((node, idx) => {
+          placements[node.id] = {
+            x: columnX[kind],
+            y: 80 + idx * spacing,
+            node
+          };
+        });
+      });
+
+      const height = Math.max(
+        360,
+        ...Object.values(nodesByKind).map((list) => 80 + list.length * spacing)
+      );
+
+      return { placements, height };
+    }
+
+    function renderInvestigatorDetails(node) {
+      if (!node) {
+        return '<div class="investigator-empty">Select a node to view details.</div>';
+      }
+
+      if (node.kind === 'event') {
+        const meta = node.meta || {};
+        const pathValue = meta.path || meta.file || 'unknown';
+        const mitreLabel = meta.mitre?.id || meta.mitre?.technique_id || meta.mitre?.name || 'Unmapped';
+        const fields = [
+          ['Action', node.label || meta.action || meta.type || 'event'],
+          ['Path', pathValue],
+          ['Timestamp', meta.timestamp ? formatTime(meta.timestamp) : '—'],
+          ['Severity', meta.severity || 'info'],
+          ['User', meta.user || meta.metadata?.user || 'n/a'],
+          ['Source', meta.source || 'local'],
+          ['Agent', meta.agentId || 'n/a'],
+          ['Before hash', meta.beforeHash || '—'],
+          ['After hash', meta.afterHash || '—'],
+          ['MITRE', mitreLabel]
+        ];
+
+        return `
+          <div class="investigator-panel">
+            <p class="eyebrow">Event</p>
+            <h3 class="title-md">${node.label || 'File event'}</h3>
+            <p class="text-muted">${meta.message || 'File activity observed.'}</p>
+            <div class="details-grid">
+              ${fields
+                .map(
+                  ([label, value]) => `
+                    <div class="detail-item">
+                      <p class="detail-label">${label}</p>
+                      <p class="detail-value">${value}</p>
+                    </div>`
+                )
+                .join('')}
+            </div>
+            ${meta.aiAssessment?.reason ? `<div class="banner mt-4">AI: ${meta.aiAssessment.reason}</div>` : ''}
+            ${meta.metadata ? renderMetadata(meta.metadata) : ''}
+          </div>
+        `;
+      }
+
+      if (node.kind === 'target') {
+        const related = state.events
+          .filter((evt) => (evt.path || evt.file) === node.meta?.path)
+          .slice(0, 6);
+
+        return `
+          <div class="investigator-panel">
+            <p class="eyebrow">Target</p>
+            <h3 class="title-md" title="${node.meta?.path || ''}">${node.label}</h3>
+            <p class="text-muted">Recent activity touching this file.</p>
+            <div class="investigator-list">
+              ${
+                related.length
+                  ? related
+                      .map(
+                        (evt) => `
+                          <div class="investigator-row">
+                            <div class="pill">${evt.type || evt.action}</div>
+                            <div class="grow">
+                              <p class="detail-label">${formatTimeShort(evt.timestamp || Date.now())}</p>
+                              <p class="detail-value">${evt.user || evt.metadata?.user || evt.agentId || 'actor'}</p>
+                            </div>
+                            <span class="severity-pill severity-${evt.severity || 'info'}">${(evt.severity || 'info').toUpperCase()}</span>
+                          </div>
+                        `
+                      )
+                      .join('')
+                  : '<p class="text-muted">No recent events for this target.</p>'
+              }
+            </div>
+          </div>
+        `;
+      }
+
+      if (node.kind === 'actor') {
+        const meta = node.meta || {};
+        return `
+          <div class="investigator-panel">
+            <p class="eyebrow">Actor</p>
+            <h3 class="title-md">${node.label}</h3>
+            <p class="text-muted">Source of observed file events.</p>
+            <div class="details-grid">
+              ${['source', 'agentId', 'user']
+                .map(
+                  (key) => `
+                    <div class="detail-item">
+                      <p class="detail-label">${key}</p>
+                      <p class="detail-value">${meta[key] || 'n/a'}</p>
+                    </div>`
+                )
+                .join('')}
+            </div>
+          </div>
+        `;
+      }
+
+      return '<div class="investigator-empty">No details available.</div>';
+    }
+
+    function renderInvestigatorGraph(graph) {
+      if (!graph.nodes?.length) {
+        return '<div class="investigator-empty">No events in this range.</div>';
+      }
+
+      const { placements, height } = layoutInvestigatorGraph(graph);
+      const activeIds = new Set();
+      const focusId = state.investigatorHoverId || state.investigatorSelectedNode?.id;
+      if (focusId) {
+        activeIds.add(focusId);
+        graph.edges.forEach((edge) => {
+          if (edge.from === focusId || edge.to === focusId) {
+            activeIds.add(edge.from);
+            activeIds.add(edge.to);
+          }
+        });
+      }
+
+      const nodeWidth = 180;
+      const nodeHeight = 56;
+
+      const edges = graph.edges
+        .map((edge) => {
+          const from = placements[edge.from];
+          const to = placements[edge.to];
+          if (!from || !to) return '';
+          const startX = from.x + nodeWidth / 2;
+          const endX = to.x - nodeWidth / 2;
+          const startY = from.y;
+          const endY = to.y;
+          const control1X = startX + 80;
+          const control2X = endX - 80;
+          const active = activeIds.size ? activeIds.has(edge.from) && activeIds.has(edge.to) : true;
+          const dimmed = activeIds.size && !active;
+          return `
+            <path d="M ${startX} ${startY} C ${control1X} ${startY} ${control2X} ${endY} ${endX} ${endY}"
+              class="graph-edge ${dimmed ? 'dimmed' : ''} ${active ? 'active' : ''}" data-from="${edge.from}" data-to="${edge.to}" />
+          `;
+        })
+        .join('');
+
+      const nodes = graph.nodes
+        .map((node) => {
+          const pos = placements[node.id];
+          if (!pos) return '';
+          const severityClass = node.kind === 'event' ? `sev-${node.severity || 'info'}` : '';
+          const dimmed = activeIds.size && !activeIds.has(node.id);
+          const title = node.kind === 'target' ? `title="${node.label}"` : '';
+          return `
+            <g class="graph-node ${severityClass} ${node.kind} ${dimmed ? 'dimmed' : ''}" data-node-id="${node.id}" ${title}>
+              <rect x="${pos.x - nodeWidth / 2}" y="${pos.y - nodeHeight / 2}" rx="12" ry="12" width="${nodeWidth}" height="${nodeHeight}" />
+              <text x="${pos.x}" y="${pos.y - 4}" text-anchor="middle" class="node-label">${node.label}</text>
+              <text x="${pos.x}" y="${pos.y + 16}" text-anchor="middle" class="node-sub">
+                ${node.kind === 'event' ? (node.meta?.path || node.meta?.file || '') : node.meta?.path || node.meta?.user || ''}
+              </text>
+            </g>
+          `;
+        })
+        .join('');
+
+      return `
+        <svg class="investigator-graph" viewBox="0 0 800 ${height}" role="img" aria-label="Investigation graph">
+          ${edges}
+          ${nodes}
+        </svg>
+      `;
+    }
+
+    function renderInvestigatorSection(graph) {
+      return `
+        <div class="stack gap-4 investigator-section">
+          <div class="toolbar card px-4 py-3">
+            <div>
+              <p class="eyebrow">Investigator</p>
+              <h2 class="title-lg">Attacker timeline</h2>
+              <p class="text-muted">Node-link view of actors, events, and targets.</p>
+            </div>
+            <div class="flex items-center gap-3">
+              <label for="investigator-range" class="text-muted">Range</label>
+              <select id="investigator-range" class="select range-select">
+                ${Object.keys(timeRangeConfig)
+                  .map((k) => `<option value="${k}" ${state.investigatorRange === k ? 'selected' : ''}>${k}</option>`)
+                  .join('')}
+              </select>
+              <button class="btn ghost" id="investigator-refresh">Refresh</button>
+            </div>
+          </div>
+          <div class="card investigator-wrap">
+            <div class="investigator-grid">
+              <div class="investigator-canvas">${renderInvestigatorGraph(graph)}</div>
+              <aside class="investigator-drawer">${renderInvestigatorDetails(state.investigatorSelectedNode)}</aside>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
     function renderMain(activeSection, counters, statusCopy, changesOverTime, riskModel, latest, filteredEvents) {
       switch (activeSection) {
         case 'alertsConsole':
@@ -1190,6 +1428,8 @@
           return renderChartsSection(changesOverTime, riskModel);
         case 'timeline':
           return renderTimelineSection(state.timelineEntries, state.timelineStats);
+        case 'investigator':
+          return renderInvestigatorSection(state.investigatorGraph);
         case 'settings':
           return renderSettingsSection(statusCopy);
         case 'eventDetails':
@@ -1366,26 +1606,10 @@
           });
         }
 
-        const timelineRangeSelect = document.getElementById('timeline-range');
-        if (timelineRangeSelect) {
-          timelineRangeSelect.addEventListener('change', async (e) => {
-            state.timelineRange = e.target.value;
-            await refreshTimeline(state.timelineRange);
-            render();
-          });
-        }
-
-        const timelineRefreshBtn = document.getElementById('timeline-refresh');
-        if (timelineRefreshBtn) {
-          timelineRefreshBtn.addEventListener('click', async () => {
-            await refreshTimeline(state.timelineRange);
-            render();
-          });
-        }
-
         const rangeSelects = document.querySelectorAll('.range-select');
         rangeSelects.forEach((select) => {
           select.addEventListener('change', (e) => {
+            if (e.target.id === 'investigator-range') return;
             state.timeRange = e.target.value;
             render();
           });
@@ -1405,6 +1629,66 @@
           row.addEventListener('click', () => {
             const idx = Number(row.getAttribute('data-event-index'));
             state.selectedEvent = currentList[idx];
+            render();
+          });
+        });
+      }
+
+      if (state.activeSection === 'timeline') {
+        const timelineRangeSelect = document.getElementById('timeline-range');
+        if (timelineRangeSelect) {
+          timelineRangeSelect.addEventListener('change', async (e) => {
+            state.timelineRange = e.target.value;
+            await refreshTimeline(state.timelineRange);
+            render();
+          });
+        }
+
+        const timelineRefreshBtn = document.getElementById('timeline-refresh');
+        if (timelineRefreshBtn) {
+          timelineRefreshBtn.addEventListener('click', async () => {
+            await refreshTimeline(state.timelineRange);
+            render();
+          });
+        }
+      }
+
+      if (state.activeSection === 'investigator') {
+        const rangeSelect = document.getElementById('investigator-range');
+        if (rangeSelect) {
+          rangeSelect.addEventListener('change', async (e) => {
+            state.investigatorRange = e.target.value;
+            await refreshInvestigator(state.investigatorRange);
+            render();
+          });
+        }
+
+        const invRefresh = document.getElementById('investigator-refresh');
+        if (invRefresh) {
+          invRefresh.addEventListener('click', async () => {
+            await refreshInvestigator(state.investigatorRange);
+            render();
+          });
+        }
+
+        const nodeEls = document.querySelectorAll('.graph-node');
+        const nodeMap = state.investigatorGraph.nodes.reduce((acc, node) => {
+          acc[node.id] = node;
+          return acc;
+        }, {});
+
+        nodeEls.forEach((el) => {
+          const id = el.getAttribute('data-node-id');
+          el.addEventListener('mouseenter', () => {
+            state.investigatorHoverId = id;
+            render();
+          });
+          el.addEventListener('mouseleave', () => {
+            state.investigatorHoverId = null;
+            render();
+          });
+          el.addEventListener('click', () => {
+            state.investigatorSelectedNode = nodeMap[id] || null;
             render();
           });
         });
@@ -1463,6 +1747,7 @@
         state.status = 'error';
       }
       await refreshTimeline(state.timelineRange);
+      await refreshInvestigator(state.investigatorRange);
       render();
     }
 
@@ -1497,6 +1782,27 @@
       }, 1500);
     }
 
+    async function refreshInvestigator(range = state.investigatorRange) {
+      try {
+        const res = await fetch(`/api/investigator?range=${range}`);
+        const data = await res.json();
+        state.investigatorGraph = data || { nodes: [], edges: [], range };
+        state.investigatorRange = data.range || range;
+      } catch (err) {
+        console.error('Investigator refresh failed', err);
+      }
+    }
+
+    let investigatorRefreshTimer = null;
+    function scheduleInvestigatorRefresh() {
+      if (investigatorRefreshTimer) return;
+      investigatorRefreshTimer = setTimeout(async () => {
+        investigatorRefreshTimer = null;
+        await refreshInvestigator(state.investigatorRange);
+        render();
+      }, 1500);
+    }
+
     function startStream() {
       const source = new EventSource('/stream');
       source.onopen = () => { state.status = 'streaming'; render(); };
@@ -1507,6 +1813,7 @@
         state.events.unshift(payload);
         state.events = state.events.slice(0, 200);
         scheduleTimelineRefresh();
+        scheduleInvestigatorRefresh();
         render();
       };
     }
