@@ -18,6 +18,8 @@ const LEGACY_BASELINE_FILE = path.join(DATA_DIR, 'baseline.json');
 const LOCAL_BASELINE_ID = 'local';
 const LOG_FILE = path.join(LOG_DIR, 'fim.log');
 const AGENTS_FILE = path.join(CONFIG_DIR, 'agents.json');
+const AUTH_USER = process.env.AUTH_USER || 'admin';
+const AUTH_PASS = process.env.AUTH_PASS || 'changeme';
 
 const IGNORE_NAMES = new Set(['.DS_Store', 'baseline.json', 'fim.log']);
 const GOVERNANCE_KEYWORDS = /(personal|private|secret|pii)/i;
@@ -65,6 +67,7 @@ const SUPPRESSION_STALE_MS = 5 * 60 * 1000;
 const suppressionTracker = new Map();
 let metadataRules = [];
 const EVENT_BUFFER_LIMIT = 500;
+const activeTokens = new Set();
 
 const DEFAULT_METADATA_RULES = [
   {
@@ -1249,6 +1252,36 @@ function parseJsonBody(req) {
   });
 }
 
+function parseCookies(header) {
+  if (!header) return {};
+  return header.split(';').reduce((acc, part) => {
+    const [key, value] = part.split('=').map((v) => v && v.trim());
+    if (key && value) acc[key] = decodeURIComponent(value);
+    return acc;
+  }, {});
+}
+
+function getAuthToken(req) {
+  const authHeader = req.headers.authorization || '';
+  if (authHeader.startsWith('Bearer ')) {
+    return authHeader.slice('Bearer '.length).trim();
+  }
+
+  const cookies = parseCookies(req.headers.cookie || '');
+  if (cookies.auth_token) return cookies.auth_token;
+  return null;
+}
+
+function ensureAuthenticated(req, res) {
+  const token = getAuthToken(req);
+  if (!token || !activeTokens.has(token)) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'Unauthorized' }));
+    return false;
+  }
+  return true;
+}
+
 function validateAgentId(agentId) {
   if (!agentId) return true;
   if (!agentRegistry || agentRegistry.size === 0) return true;
@@ -1489,7 +1522,7 @@ function setupWatcher() {
 }
 
 function serveStatic(req, res, urlPath) {
-  const normalized = urlPath === '/' ? '/index.html' : urlPath;
+  const normalized = urlPath === '/' || urlPath === '/login' ? '/index.html' : urlPath;
   const filePath = path.join(PUBLIC_DIR, path.normalize(normalized));
   if (!filePath.startsWith(PUBLIC_DIR)) {
     res.writeHead(403); res.end('Forbidden'); return true;
@@ -1517,6 +1550,50 @@ function handleSSE(req, res) {
 
 async function requestHandler(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
+
+  if (url.pathname === '/api/login' && req.method === 'POST') {
+    try {
+      const payload = await parseJsonBody(req);
+      const { username, password } = payload || {};
+      if (username === AUTH_USER && password === AUTH_PASS) {
+        const token = crypto.randomBytes(32).toString('hex');
+        activeTokens.add(token);
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Set-Cookie': `auth_token=${token}; HttpOnly; Path=/; Max-Age=${7 * 24 * 60 * 60}`
+        });
+        res.end(JSON.stringify({ ok: true, token }));
+      } else {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid credentials' }));
+      }
+    } catch (err) {
+      res.writeHead(err.statusCode || 400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'Invalid request' }));
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/logout' && req.method === 'POST') {
+    const token = getAuthToken(req);
+    if (token) {
+      activeTokens.delete(token);
+    }
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Set-Cookie': 'auth_token=; HttpOnly; Path=/; Max-Age=0'
+    });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  const requiresAuth = ['/api/events', '/api/timeline', '/api/investigator', '/api/rebuild', '/api/config'].includes(
+    url.pathname
+  );
+
+  if ((requiresAuth || url.pathname === '/stream') && !ensureAuthenticated(req, res)) {
+    return;
+  }
   if (url.pathname === '/api/events' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     const events = eventHistory.map(normalizeEventShape);
@@ -1631,7 +1708,7 @@ async function bootstrap() {
       res.writeHead(204, {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type'
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization'
       });
       res.end();
       return;
