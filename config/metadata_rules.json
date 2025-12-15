@@ -13,7 +13,7 @@
         "private_key"
       ]
     },
-    "severity": "critical",
+    "severity": "high",
     "tags": ["credentials", "sensitive"]
   }
 ]

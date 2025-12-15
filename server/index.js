@@ -81,12 +81,12 @@ const DEFAULT_METADATA_RULES = [
         'private_key'
       ]
     },
-    severity: 'critical',
+    severity: 'high',
     tags: ['credentials', 'sensitive']
   }
 ];
 
-const SEVERITY_RANK = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
+const SEVERITY_RANK = { info: 0, low: 1, medium: 2, high: 3 };
 
 const MITRE_LOOKUP = {
   create: { id: 'T1587', name: 'Develop Capabilities' },
@@ -686,7 +686,7 @@ function applyMetadataRules(evt) {
 
 async function applyQuarantine(evt) {
   const baseQuarantine = { recommended: false, performed: false, staged_path: null, error: null };
-  if (evt.severity !== 'critical') {
+  if (evt.severity !== 'high') {
     return { quarantine: baseQuarantine, message: null };
   }
 
