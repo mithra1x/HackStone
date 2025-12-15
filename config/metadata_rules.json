@@ -1,0 +1,19 @@
+[
+  {
+    "description": "Credentials and secrets",
+    "match": {
+      "path_keywords": [
+        "secret",
+        "password",
+        "passwd",
+        "credential",
+        "token",
+        "apikey",
+        "api_key",
+        "private_key"
+      ]
+    },
+    "severity": "high",
+    "tags": ["credentials", "sensitive"]
+  }
+]

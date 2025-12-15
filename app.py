@@ -164,7 +164,6 @@ if df.empty:
 # Helper utilities
 # =============================================================
 SEVERITY_COLORS = {
-    "critical": "#d7263d",
     "high": "#f77f00",
     "medium": "#ffd166",
     "low": "#4cc9f0",
@@ -172,8 +171,6 @@ SEVERITY_COLORS = {
 
 
 def classify_risk(score: int) -> str:
-    if score >= 90:
-        return "critical"
     if score >= 70:
         return "high"
     if score >= 40:
@@ -371,7 +368,7 @@ with detail_col:
     st.write(
         "- Validate change source (ticket, deployment window)\n"
         "- Correlate with identity telemetry (SSO, MFA logs)\n"
-        "- Capture forensic copy before remediation (if high/critical)\n"
+        "- Capture forensic copy before remediation (if high)\n"
         "- Escalate to IR on repeated unauthorized modifications"
     )
 
