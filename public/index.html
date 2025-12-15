@@ -18,12 +18,14 @@
     };
 
     const severityHue = {
+      critical: 'var(--rose)',
       high: 'var(--red)',
       medium: 'var(--amber)',
       info: 'var(--green)'
     };
 
     const severityWeight = {
+      critical: 10,
       high: 6,
       medium: 3,
       info: 1
@@ -453,7 +455,7 @@
     }
 
     function fallbackAiAssessment(evt) {
-      const severityScore = { high: 72, medium: 52, info: 28 };
+      const severityScore = { critical: 92, high: 72, medium: 52, info: 28 };
       const base = severityScore[evt.severity] || 24;
       let label = 'Stable';
       if (base >= 70) label = 'Critical';
